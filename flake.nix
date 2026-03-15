@@ -51,6 +51,7 @@
             ];
 
             buildInputs = with pkgs; [
+              libedit
               # stdlib for cpp
               # llvm.libcxx
               # zlib

@@ -72,7 +72,11 @@ set(${PROJECT_NAME}_INSTALL_CMAKEDIR
 # Dependencies  ##
 # ##############################################################################
 # find_package(OpenSSL REQUIRED)
-find_package(CURL REQUIRED)
+#
+# find_package(CURL REQUIRED)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(libedit REQUIRED IMPORTED_TARGET libedit)
 
 if(ENABLE_TESTING)
   find_package(GTest REQUIRED)
@@ -90,6 +94,7 @@ include_directories(${PROJECT_SOURCE_DIR})
 add_subdirectory(src)
 add_subdirectory(tools)
 if(BUILD_TESTING)
+  find_package(Catch2 CONFIG REQUIRED)
   add_subdirectory("test")
 endif()
 
