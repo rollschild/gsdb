@@ -50,9 +50,11 @@ ln -s build/compile_commands.json .
 ## Architecture
 
 ```
-include/libgsdb/libgsdb.hpp  (public header)
+include/libgsdb/
+  process.hpp   (public: process class)
+  error.hpp     (public: error class)
       ↓ PUBLIC include path
- src/libgsdb.cpp → [libgsdb.a]
+ src/process.cpp → [libgsdb.a]
       ↓                    ↓
  gsdb::libgsdb        gsdb::libgsdb
  + PkgConfig::libedit + Catch2::Catch2WithMain
@@ -65,13 +67,18 @@ include/libgsdb/libgsdb.hpp  (public header)
 - **`tools/`** - `gsdb`: CLI executable linking against `gsdb::libgsdb` and `PkgConfig::libedit`. Contains the REPL loop (`readline`/`libedit`), command parsing, and the `attach` logic (both fork+exec with `PTRACE_TRACEME` and `PTRACE_ATTACH` to an existing PID via `-p`).
 - **`test/`** - Unit tests using Catch2 v3 (`Catch2::Catch2WithMain` supplies `main()`).
 
-The library is being refactored to move debugger primitives out of `tools/gsdb.cpp` into `libgsdb`. The `process` class (`include/libgsdb/process.hpp`) encapsulates process lifecycle (launch/attach, resume, wait_on_signal) with a `process_state` enum. It uses a private constructor pattern — clients must use the static `process::launch()` or `process::attach()` factory methods.
+### Key design patterns
+
+- **`process` class** (`include/libgsdb/process.hpp`): Encapsulates process lifecycle (launch/attach, resume, wait_on_signal) with a `process_state` enum. Uses a private constructor — clients must use the static `process::launch()` or `process::attach()` factory methods. `launch()` sets `terminate_on_end_=true` (kills child on destruction); `attach()` sets it to `false` (detaches only).
+- **`error` class** (`include/libgsdb/error.hpp`): Exception type inheriting `std::runtime_error` with static `send()` and `send_errno()` factory methods (private constructor). `send_errno()` appends `strerror(errno)` automatically.
+- The library is being refactored to move debugger primitives out of `tools/gsdb.cpp` into `libgsdb`.
 
 ## Dependencies
 
 - **libedit** - found via pkg-config, linked to the CLI tool only (provides `readline`-compatible line editing)
 - **Catch2** (v3) - test framework, found via `find_package(Catch2 CONFIG)`
 - **GTest** - available in the Nix flake and found by CMake, but not currently used by any target
+- **Boost**, **curl** - available in the Nix flake but not currently used by any CMake target
 
 ## Troubleshooting
 

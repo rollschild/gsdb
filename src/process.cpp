@@ -3,10 +3,24 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <csignal>
+#include <cstddef>
+#include <cstdlib>
 #include <libgsdb/error.hpp>
 #include <libgsdb/process.hpp>
 #include <memory>
+#include <string>
+
+#include "libgsdb/pipe.hpp"
+
+namespace {
+void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
+    auto message = prefix + ": " + std::strerror(errno);
+    channel.write(reinterpret_cast<std::byte*>(message.data()), message.size());
+    exit(-1);
+}
+}  // namespace
 
 gsdb::process::~process() {
     if (pid_ != 0) {
@@ -64,6 +78,9 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
 
 std::unique_ptr<gsdb::process> gsdb::process::launch(
     std::filesystem::path path) {
+    // IMPORTANT: CALL pipe BEFORE fork
+    pipe channel(/*close_on_exec=*/true);
+
     pid_t pid;
     if ((pid = fork()) < 0) {
         error::send_errno("fork FAILED");
@@ -71,13 +88,27 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(
 
     if (pid == 0) {
         // child process
+        channel.close_read();
         if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0) {
             error::send_errno("Tracing failed");
+            exit_with_perror(channel, "Tracing failed");
         }
         if (execlp(path.c_str(), path.c_str(), nullptr) < 0) {
-            std::perror("Exec FAILED!");
-            error::send_errno("exec FAILED");
+            exit_with_perror(channel, "exec FAILED");
         }
+    }
+
+    channel.close_write();
+    auto data = channel.read();
+    channel.close_read();
+    if (data.size() > 0) {
+        // wait for child process to terminate
+        waitpid(pid, nullptr, 0);
+        // Now whenever there is an error in launching the child process, the
+        // parent process will throw an exception
+        auto chars = reinterpret_cast<char*>(data.data());
+        //               ↓begin-pointer↓  ↓end-pointer↓
+        error::send(std::string(chars, chars + data.size()));
     }
 
     std::unique_ptr<process> proc(new process(pid, /*terminate_on_end=*/true));

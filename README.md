@@ -31,3 +31,7 @@ The main debug syscall provided by Linux and macOS to carry out these low-level 
 **Interrupt handlers** are kind of like signal handlers, but they’re set up in special regions of memory and interact directly with the hardware.
 
 The register used to keep track of the current instruction is called the **program counter** or **instruction pointer**.
+
+C++ exceptions don’t flow between processes.
+
+Pipes are a form of buffered communication, able to retain up to 64KiB of data by default before being read from.
