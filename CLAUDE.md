@@ -42,6 +42,9 @@ cd build && ctest
 # Run a single Catch2 test case by name
 ./build/test/tests "test case name"
 
+# Run tests by tag
+./build/test/tests "[process]"
+
 # Generate compile_commands.json (for clangd)
 cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ln -s build/compile_commands.json .
@@ -53,23 +56,25 @@ ln -s build/compile_commands.json .
 include/libgsdb/
   process.hpp   (public: process class)
   error.hpp     (public: error class)
+  pipe.hpp      (public: pipe class)
       ↓ PUBLIC include path
- src/process.cpp → [libgsdb.a]
-      ↓                    ↓
- gsdb::libgsdb        gsdb::libgsdb
- + PkgConfig::libedit + Catch2::Catch2WithMain
-      ↓                    ↓
- tools/gsdb            test/tests
- (CLI binary)          (test binary)
+ src/process.cpp, pipe.cpp → [libgsdb.a]
+      ↓                          ↓
+ gsdb::libgsdb              gsdb::libgsdb
+ + PkgConfig::libedit       + Catch2::Catch2WithMain
+      ↓                          ↓
+ tools/gsdb                 test/tests
+ (CLI binary)               (test binary)
 ```
 
 - **`src/`** - `libgsdb`: Core library built as a static library. Public headers in `include/libgsdb/`, private headers in `src/include/`. The CMake target is `gsdb::libgsdb`. Output file is `libgsdb.a` (OUTPUT_NAME override prevents `liblibgsdb.a`).
 - **`tools/`** - `gsdb`: CLI executable linking against `gsdb::libgsdb` and `PkgConfig::libedit`. Contains the REPL loop (`readline`/`libedit`), command parsing, and the `attach` logic (both fork+exec with `PTRACE_TRACEME` and `PTRACE_ATTACH` to an existing PID via `-p`).
-- **`test/`** - Unit tests using Catch2 v3 (`Catch2::Catch2WithMain` supplies `main()`).
+- **`test/`** - Unit tests using Catch2 v3 (`Catch2::Catch2WithMain` supplies `main()`). Test helper binaries (debuggee targets) live in `test/targets/` and are compiled as separate executables. Tests reference them via the `TARGETS_DIR` compile definition, which points to the build-tree location of these binaries.
 
 ### Key design patterns
 
 - **`process` class** (`include/libgsdb/process.hpp`): Encapsulates process lifecycle (launch/attach, resume, wait_on_signal) with a `process_state` enum. Uses a private constructor — clients must use the static `process::launch()` or `process::attach()` factory methods. `launch()` sets `terminate_on_end_=true` (kills child on destruction); `attach()` sets it to `false` (detaches only).
+- **`pipe` class** (`include/libgsdb/pipe.hpp`): RAII wrapper around Linux `pipe2()`. Used internally by `process::launch()` to communicate exec errors from the child back to the parent. Supports `O_CLOEXEC` so the pipe auto-closes on successful `exec`.
 - **`error` class** (`include/libgsdb/error.hpp`): Exception type inheriting `std::runtime_error` with static `send()` and `send_errno()` factory methods (private constructor). `send_errno()` appends `strerror(errno)` automatically.
 - The library is being refactored to move debugger primitives out of `tools/gsdb.cpp` into `libgsdb`.
 

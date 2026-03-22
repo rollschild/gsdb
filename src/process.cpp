@@ -87,6 +87,11 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(std::filesystem::path path,
         error::send_errno("fork FAILED");
     }
 
+    // 1. PTRACE_TRACEME — "I want to be traced" (no stop)
+    // 2. execlp — kernel replaces the process image, then delivers SIGTRAP →
+    // child stops
+    // 3. Parent's waitpid returns, confirming the child is stopped and ready to
+    // be debugged
     if (pid == 0) {
         // child process
         channel.close_read();
@@ -94,6 +99,10 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(std::filesystem::path path,
             exit_with_perror(channel, "Tracing failed");
         }
         if (execlp(path.c_str(), path.c_str(), nullptr) < 0) {
+            // child stops here
+            // kernel automatically sends it a `SIGTRAP`, which stops it before
+            // the new program executes any instructions.
+            // This is what the parent's `wait_on_signal` is waiting for
             exit_with_perror(channel, "exec FAILED");
         }
     }
@@ -129,12 +138,14 @@ std::unique_ptr<gsdb::process> gsdb::process::attach(pid_t pid) {
     }
 
     if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0) {
+        // sends a SIGSTOP to the target process
         error::send_errno("Could NOT attach");
     }
 
     std::unique_ptr<process> proc(
         new process(pid, /*terminate_on_end=*/false, /*is_attached=*/true));
-    proc->wait_on_signal();  // wait for the underlying process to halt
+    proc->wait_on_signal();  // blocking, wait for the underlying process to
+                             // halt
 
     return proc;
 }
