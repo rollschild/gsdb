@@ -35,3 +35,15 @@ The register used to keep track of the current instruction is called the **progr
 C++ exceptions don’t flow between processes.
 
 Pipes are a form of buffered communication, able to retain up to 64KiB of data by default before being read from.
+
+### Linux **process filesystem (procfs)**
+
+Enables us to examine the processes running on a system through files.
+
+A virtual filesystem located at `/proc`.
+
+- `/proc/<pid>/stat` - gives high-level information about the state of a given process, such as:
+  - the name of the executable the process is running
+  - the PID of its parent
+  - the amount of time for which it has been running
+  - the current process execution state.
