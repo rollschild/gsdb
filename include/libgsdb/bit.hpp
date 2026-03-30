@@ -1,0 +1,42 @@
+#ifndef GSDB_BIT_HPP
+#define GSDB_BIT_HPP
+
+#include <cstddef>
+#include <cstring>
+#include <libgsdb/types.hpp>
+
+namespace gsdb {
+template <class To>
+To from_bytes(const std::byte* bytes) {
+    To ret;
+    std::memcpy(&ret, bytes, sizeof(To));
+    return ret;
+}
+
+template <class From>
+std::byte* as_bytes(From& from) {
+    return reinterpret_cast<std::byte*>(&from);
+}
+
+template <class From>
+const std::byte* as_bytes(const From& from) {
+    return reinterpret_cast<const std::byte*>(&from);
+}
+
+template <typename From>
+byte128 to_byte128(From src) {
+    byte128 ret{};
+    std::memcpy(&ret, &src, sizeof(From));
+    return ret;
+}
+
+template <typename From>
+byte64 to_byte64(From src) {
+    byte64 ret{};
+    std::memcpy(&ret, &src, sizeof(From));
+    return ret;
+}
+
+}  // namespace gsdb
+
+#endif

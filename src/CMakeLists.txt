@@ -1,5 +1,5 @@
 # Use namespaced library targets. Creates _static_ library target.
-add_library(libgsdb process.cpp pipe.cpp)
+add_library(libgsdb process.cpp pipe.cpp registers.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
 add_library(gsdb::libgsdb ALIAS libgsdb)
 

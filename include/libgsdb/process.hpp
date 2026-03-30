@@ -2,10 +2,13 @@
 #define GSDB_PROCESS_HPP
 
 #include <sys/types.h>
+#include <sys/user.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+
+#include "libgsdb/registers.hpp"
 
 namespace gsdb {
 
@@ -35,17 +38,30 @@ class process {
 
     ~process();
 
+    registers& get_registers() { return *registers_; }
+    const registers& get_registers() const { return *registers_; }
+
+    void write_user_area(std::size_t offset, std::uint64_t data);
+
+    void write_fprs(const user_fpregs_struct& fprs);
+    void write_gprs(const user_regs_struct& gprs);
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
     process(pid_t pid, bool terminate_on_end, bool is_attached)
         : pid_(pid),
           terminate_on_end_(terminate_on_end),
-          is_attached_(is_attached) {}
+          is_attached_(is_attached),
+          registers_(new registers(*this)) {}
     pid_t pid_ = 0;
     bool terminate_on_end_ = true;
     process_state state_ = process_state::stopped;
     bool is_attached_ = true;
+
+    // populate registers_ when the process halts
+    void read_all_registers();
+    std::unique_ptr<registers> registers_;
 };
 }  // namespace gsdb
 

@@ -13,7 +13,7 @@ DEFINE_REGISTER macro defined"
     DEFINE_REGISTER(name, -1, 4, GPR_OFFSET(super), \
     register_type::sub_gpr, register_format::uint)
 
-#define DEFINE_GPR_16(name,dwarf_id) \
+#define DEFINE_GPR_16(name,super) \
     DEFINE_REGISTER(name, -1, 2, GPR_OFFSET(super), \
     register_type::sub_gpr, register_format::uint)
 
