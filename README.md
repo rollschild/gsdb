@@ -118,3 +118,19 @@ The debugger needs a mapping from DWARF register numbers to the actual register 
 **X-Macros** allow us to maintain independent data structures whose members or operations rely on the same underlying data and must be kept in sync.
 
 a.k.a. **include-file macro**
+
+### Assembly
+
+GCC defaults to AT&T syntax.
+
+```assembly
+; move 64 bits of data from rsp to rbp
+movq %rsp, %rbp
+```
+
+#### How to issue syscalls in assembly
+
+- System V ABI:
+  - the syscall ID goes in `rax`;
+  - subsequent arguments go in `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`;
+  - and the return value of the syscall is stored in `rax`

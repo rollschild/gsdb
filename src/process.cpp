@@ -11,6 +11,7 @@
 #include <libgsdb/error.hpp>
 #include <libgsdb/process.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "libgsdb/pipe.hpp"
@@ -86,8 +87,9 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
     return reason;
 }
 
-std::unique_ptr<gsdb::process> gsdb::process::launch(std::filesystem::path path,
-                                                     bool debug) {
+std::unique_ptr<gsdb::process> gsdb::process::launch(
+    std::filesystem::path path, bool debug,
+    std::optional<int> stdout_replacement) {
     // IMPORTANT: CALL pipe BEFORE fork
     pipe channel(/*close_on_exec=*/true);
 
@@ -104,6 +106,18 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(std::filesystem::path path,
     if (pid == 0) {
         // child process
         channel.close_read();
+
+        if (stdout_replacement) {
+            // dup2: closes the second file descriptor, and then duplicates the
+            // first file descriptor to the second.
+            // Now anything that goes to `stdout` now goes through
+            // `*stdout_replacement`.
+            // Could also use `stdout_replacement.value()`
+            if (dup2(*stdout_replacement, STDOUT_FILENO) < 0) {
+                exit_with_perror(channel, "stdout replacement failed");
+            }
+        }
+
         if (debug and ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0) {
             exit_with_perror(channel, "Tracing failed");
         }
