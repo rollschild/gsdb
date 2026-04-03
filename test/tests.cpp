@@ -11,6 +11,7 @@
 #include "libgsdb/error.hpp"
 #include "libgsdb/pipe.hpp"
 #include "libgsdb/register_info.hpp"
+#include "libgsdb/types.hpp"
 
 using namespace gsdb;
 
@@ -149,4 +150,48 @@ TEST_CASE("Write register works", "[register]") {
 
     output = channel.read();
     REQUIRE(to_string_view(output) == "42.24");
+}
+
+TEST_CASE("Read register works", "[register]") {
+    bool close_on_exec = false;
+    gsdb::pipe channel(close_on_exec);
+
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/reg_read");
+    auto& regs = proc->get_registers();
+
+    proc->resume();  // resume again until next trap
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<std::uint64_t>(register_id::r13) == 0xcafecafe);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<std::uint8_t>(register_id::r13b) == 42);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // NOTE the `ull` suffix to ensure the integer is `unsigned long long` -
+    // `uint64_t`
+    REQUIRE(regs.read_by_id_as<byte64>(register_id::mm0) ==
+            to_byte64(0xdeadbeefull));
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // Generally, you shouldn’t compare floating-point values by their bit
+    // representations due to precision and rounding issues. However, binary can
+    // exactly represent floating-point values whose denominators are powers of
+    // two (such as 0.5, 0.25, 0.125, and so on), so it’s safe for us to do so
+    // here.
+    // We call such floating-point numbers **dyadic rationals**
+    REQUIRE(regs.read_by_id_as<byte128>(register_id::xmm0) ==
+            to_byte128(64.125));
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // NOTE the `L` suffix - `long double`
+    REQUIRE(regs.read_by_id_as<long double>(register_id::st0) == 64.125L);
 }
