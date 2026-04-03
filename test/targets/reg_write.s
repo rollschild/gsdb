@@ -6,6 +6,8 @@
 # .asciz: encodes the string into ASCII with a null terminator
 # %#x: the `printf` format string for hexadecimal integers
 hex_format: .asciz "%#x"
+float_format: .asciz "%.2f"
+long_float_format: .asciz "%.2Lf" # long float
 
 .section .text
 
@@ -52,6 +54,44 @@ main:
 
     # stops the process after it has printed %rsi via printf
     # gives debugger a chance to inspect the result
+    trap
+
+    # print contents of mm0
+    movq %mm0, %rsi
+    leaq hex_format(%rip), %rdi
+    movq $0, %rax
+    call printf@plt
+    movq $0, %rdi
+    call fflush@plt
+
+    trap
+
+    # print contents of xmm0
+    leaq float_format(%rip), %rdi
+    # keep the value to print in xmm0, and write 1 into %rax to tell 
+    # printf that there is a vector argument
+    movq $1, %rax
+    call printf@plt
+    movq $0, %rdi
+    call fflush@plt
+
+    trap
+
+    # print contents of %st0
+    #
+    # allocate 16 bytes on stack to store contents of st0
+    # x64 stack grows _downwards_, thus subtraction
+    subq $16, %rsp 
+    # pop st0 from the top of FPU stack
+    fstpt (%rsp)
+    leaq long_float_format(%rip), %rdi
+    movq $0, %rax
+    call printf@plt
+    movq $0, %rdi
+    call fflush@plt
+    # cleanup stack allocation
+    addq $16, %rsp
+
     trap
 
     popq %rbp 

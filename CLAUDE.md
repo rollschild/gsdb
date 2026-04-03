@@ -63,7 +63,7 @@ include/libgsdb/
   bit.hpp            (public: byte-level helpers)
   detail/registers.inc  (X-macro register table)
         ↓ PUBLIC include path
- src/process.cpp, pipe.cpp → [libgsdb.a]
+ src/process.cpp, pipe.cpp, registers.cpp → [libgsdb.a]
         ↓                          ↓
  gsdb::libgsdb              gsdb::libgsdb
  + PkgConfig::libedit       + Catch2::Catch2WithMain
@@ -74,7 +74,7 @@ include/libgsdb/
 
 - **`src/`** - `libgsdb`: Core library built as a static library. Public headers in `include/libgsdb/`, private headers go in `src/include/` (configured in CMake but currently empty). The CMake target is `gsdb::libgsdb`. Output file is `libgsdb.a` (OUTPUT_NAME override prevents `liblibgsdb.a`).
 - **`tools/`** - `gsdb`: CLI executable linking against `gsdb::libgsdb` and `PkgConfig::libedit`. Contains the REPL loop (`readline`/`libedit`), command parsing, and the `attach` logic (both fork+exec with `PTRACE_TRACEME` and `PTRACE_ATTACH` to an existing PID via `-p`).
-- **`test/`** - Unit tests using Catch2 v3 (`Catch2::Catch2WithMain` supplies `main()`). Test helper binaries (debuggee targets) live in `test/targets/` and are compiled as separate executables (C++ like `run_endlessly.cpp` and assembly like `reg_write.s`). Tests reference them via the `TARGETS_DIR` compile definition, which points to the build-tree location of these binaries. `process::launch(path, false)` launches without tracing (no `PTRACE_TRACEME`), used in tests that separately `attach()`. Assembly targets use `-pie` (position-independent executable).
+- **`test/`** - Unit tests using Catch2 v3 (`Catch2::Catch2WithMain` supplies `main()`). Test helper binaries (debuggee targets) live in `test/targets/` and are compiled as separate executables (C++ like `run_endlessly.cpp`/`end_immediately.cpp` and assembly like `reg_write.s`). Tests reference them via the `TARGETS_DIR` compile definition, which points to the build-tree location of these binaries. `process::launch(path, false)` launches without tracing (no `PTRACE_TRACEME`), used in tests that separately `attach()`. Assembly targets use `-pie` (position-independent executable).
 
 ### Key design patterns
 

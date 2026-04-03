@@ -102,4 +102,51 @@ TEST_CASE("Write register works", "[register]") {
 
     auto output = channel.read();
     REQUIRE(to_string_view(output) == "0xcafecafe");
+
+    regs.write_by_id(register_id::mm0, 0xdeadbeef);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    output = channel.read();
+    REQUIRE(to_string_view(output) == "0xdeadbeef");
+
+    // test floating points
+    regs.write_by_id(register_id::xmm0, 42.24);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    output = channel.read();
+    REQUIRE(to_string_view(output) == "42.24");
+
+    regs.write_by_id(register_id::st0, 42.24l);
+    // `fsw`: FPU status word, 16 bits wide
+    //   - tracks current size of the FPU stack
+    //   - reports errors like stack overflows, precision errors, or divisions
+    //   by zero
+    //   - bits 11 - 13 track top of the stack
+    // `ftw`: FPU tag word
+    //   - tracks which of the st registers are valid/empty/special (contain
+    //   NaNs or infinity)
+    //   - tag of `0b11` means empty
+    //   - `0b00` means valid
+    //
+    // to push value to the stack, set bits 11 to 13 to 7 (0b111) - physical
+    // register 7
+    // The top starts at index 0 and goes down
+    // A push decrements TOP. Starting from 0, one push wraps it to 7 (since 0 -
+    // 1 mod 8 = 7)
+    // So setting TOP=7 simulates the state _after_ one value has been pushed
+    // onto a previously empty stack. The FPU sees "one push happened, st0 is at
+    // R7, and it's valid"
+    regs.write_by_id(register_id::fsw, std::uint16_t{0b0011100000000000});
+    // set first tag to 0b00 and rest to 0b11
+    regs.write_by_id(register_id::ftw, std::uint16_t{0b0011111111111111});
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    output = channel.read();
+    REQUIRE(to_string_view(output) == "42.24");
 }

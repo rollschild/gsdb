@@ -54,7 +54,14 @@ A virtual filesystem located at `/proc`.
 
 - general purpose
   - 16 64-bit
-- x87
+- x87 - `long double` support
+  - x87 instructions operate on a stack of values within `st0` - `st7` registers
+  - **FPU (floating-point unit)** stack
+  - `fld` & `fstp` for pushing/popping values from top
+  - `faddp` - arithmetic operations
+    - pops top two values from FPU stack,
+    - adds them,
+    - pushes the result
 - MMX
   - SIMD (single instruction multiple data)
 - SSE
@@ -91,6 +98,8 @@ Two other 64-bit registers to be aware of are:
 
 Today, compilers use **Streaming SIMD Extensions (SSE)** instructions instead of the **x87** instructions and registers for general floating-point operations, but x87 registers are still used for long double support because they enable higher precision than SSE.
 
+SYSV ABI says that `long double` arguments must be passed on the function’s stack frame rather than using registers, and you can’t just use `mov` to transfer a value out of an `st` register.
+
 #### How to Interact with Registers with `ptrace`
 
 - `PTRACE_GETREGS` & `PTRACE_SETREGS`
@@ -124,7 +133,7 @@ a.k.a. **include-file macro**
 GCC defaults to AT&T syntax.
 
 ```assembly
-; move 64 bits of data from rsp to rbp
+# move 64 bits of data from rsp to rbp
 movq %rsp, %rbp
 ```
 
