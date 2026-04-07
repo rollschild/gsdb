@@ -2,6 +2,14 @@
 
 A debugger for Linux, written from scratch in C++.
 
+## Run
+
+To test registers:
+
+```console
+./build/tools/gsdb ./build/test/targets/reg_read
+```
+
 ## Project Structure
 
 ### The linking flow in summary
