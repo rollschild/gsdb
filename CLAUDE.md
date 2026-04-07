@@ -53,36 +53,34 @@ ln -s build/compile_commands.json .
 ## Architecture
 
 ```
-include/libgsdb/
-  process.hpp        (public: process class)
-  error.hpp          (public: error class)
-  pipe.hpp           (public: pipe class)
-  registers.hpp      (public: registers class)
-  register_info.hpp  (public: register metadata)
-  types.hpp          (public: byte64/byte128 aliases)
-  bit.hpp            (public: byte-level helpers)
-  detail/registers.inc  (X-macro register table)
-        ↓ PUBLIC include path
- src/process.cpp, pipe.cpp, registers.cpp → [libgsdb.a]
+ include/libgsdb/          (public headers)
+ src/                      (library implementation)
+        ↓
+    [libgsdb.a]  (CMake target: gsdb::libgsdb)
         ↓                          ↓
- gsdb::libgsdb              gsdb::libgsdb
  + PkgConfig::libedit       + Catch2::Catch2WithMain
         ↓                          ↓
  tools/gsdb                 test/tests
  (CLI binary)               (test binary)
 ```
 
-- **`src/`** - `libgsdb`: Core library built as a static library. Public headers in `include/libgsdb/`, private headers go in `src/include/` (configured in CMake but currently empty). The CMake target is `gsdb::libgsdb`. Output file is `libgsdb.a` (OUTPUT_NAME override prevents `liblibgsdb.a`).
-- **`tools/`** - `gsdb`: CLI executable linking against `gsdb::libgsdb` and `PkgConfig::libedit`. Contains the REPL loop (`readline`/`libedit`), command parsing, and the `attach` logic (both fork+exec with `PTRACE_TRACEME` and `PTRACE_ATTACH` to an existing PID via `-p`).
-- **`test/`** - Unit tests using Catch2 v3 (`Catch2::Catch2WithMain` supplies `main()`). Test helper binaries (debuggee targets) live in `test/targets/` and are compiled as separate executables (C++ like `run_endlessly.cpp`/`end_immediately.cpp` and assembly like `reg_write.s`). Tests reference them via the `TARGETS_DIR` compile definition, which points to the build-tree location of these binaries. `process::launch(path, false)` launches without tracing (no `PTRACE_TRACEME`), used in tests that separately `attach()`. Assembly targets use `-pie` (position-independent executable).
+- **`src/`** → `libgsdb.a` (static library, CMake target `gsdb::libgsdb`). Public headers in `include/libgsdb/`, private headers in `src/include/` (currently empty). OUTPUT_NAME override prevents `liblibgsdb.a`.
+- **`tools/`** → `gsdb` CLI. REPL via libedit, command parsing, attach logic (fork+exec with `PTRACE_TRACEME` or `PTRACE_ATTACH` to PID via `-p`).
+- **`test/`** → Catch2 v3 tests (`Catch2::Catch2WithMain` supplies `main()`). Debuggee target binaries live in `test/targets/` (C++ and assembly, assembly uses `-pie`). Tests reference them via the `TARGETS_DIR` compile definition pointing to their build-tree location.
+
+### Test tags
+
+- `[process]` — process lifecycle tests (launch, attach, resume)
+- `[register]` — register read/write tests
 
 ### Key design patterns
 
-- **`process` class** (`include/libgsdb/process.hpp`): Encapsulates process lifecycle (launch/attach, resume, wait_on_signal) with a `process_state` enum. Uses a private constructor — clients must use the static `process::launch()` or `process::attach()` factory methods. `launch()` sets `terminate_on_end_=true` (kills child on destruction); `attach()` sets it to `false` (detaches only). `launch()` uses a `pipe` with `O_CLOEXEC` to propagate exec errors from child to parent as exceptions.
-- **`registers` class** (`include/libgsdb/registers.hpp`): Wraps register read/write access. Only constructible by `process` (private constructor, `friend process`). Stores a `user` struct (from `sys/user.h`) and uses `std::variant` to represent register values across different sizes/types. Provides `read_by_id_as<T>()` and `write_by_id()` convenience methods on top of the raw `read()`/`write()` that take `register_info`.
-- **`error` class** (`include/libgsdb/error.hpp`): Exception type inheriting `std::runtime_error` with static `send()` and `send_errno()` factory methods (private constructor). `send_errno()` appends `strerror(errno)` automatically.
-- **X-macro register table** (`include/libgsdb/detail/registers.inc`): Defines all x86-64 registers (GPR, sub-GPR, FPR/x87/SSE, debug) using X-macros. Included twice in `register_info.hpp` — once to generate the `register_id` enum, once to populate the `g_register_infos[]` array. Each register entry specifies its DWARF number, size, offset into the `user` struct (for `ptrace`), type, and display format. To add a new register, add a single line in `registers.inc` and both the enum and info array stay in sync automatically. Lookup helpers: `register_info_by_id()`, `register_info_by_name()`, `register_info_by_dwarf()`.
-- **Register read/write flow**: When a process stops (`wait_on_signal()`), `read_all_registers()` is called automatically, populating the `registers::data_` (`user` struct) via three ptrace calls: `PTRACE_GETREGS` (GPRs), `PTRACE_GETFPREGS` (FPRs), and `PTRACE_PEEKUSER` (debug registers dr0–dr7). Writing back uses `registers::write()`, which routes through `process::write_gprs()` / `write_fprs()` / `write_user_area()` depending on register type.
+- **`process` factory pattern**: Private constructor; clients must use `process::launch()` or `process::attach()`. `launch()` sets `terminate_on_end_=true` (kills child on destruction); `attach()` sets it to `false` (detaches only). `launch()` uses a `pipe` with `O_CLOEXEC` to propagate exec errors from child to parent as exceptions. `launch(path, false)` launches without tracing (no `PTRACE_TRACEME`), used in tests that separately `attach()`.
+- **`registers` ownership**: Only constructible by `process` (`friend` class). Stores a `user` struct from `sys/user.h`; values are `std::variant` across sizes/types. `read_by_id_as<T>()` and `write_by_id()` are convenience wrappers over `read()`/`write()` that take `register_info`.
+- **`error` factory pattern**: Inherits `std::runtime_error`. Private constructor with static `send()` and `send_errno()` factories. `send_errno()` appends `strerror(errno)`.
+- **X-macro register table** (`detail/registers.inc`): Included twice in `register_info.hpp` — once to generate the `register_id` enum, once to populate `g_register_infos[]`. To add a register, add one line in `registers.inc`. Lookup helpers: `register_info_by_id()`, `register_info_by_name()`, `register_info_by_dwarf()`.
+- **Register read/write flow**: `wait_on_signal()` triggers `read_all_registers()`, populating `registers::data_` via `PTRACE_GETREGS` (GPRs), `PTRACE_GETFPREGS` (FPRs), and `PTRACE_PEEKUSER` (debug registers dr0–dr7). Writing routes through `process::write_gprs()` / `write_fprs()` / `write_user_area()` depending on register type.
+- **Pipe-based test communication**: Register tests use `gsdb::pipe` with `process::launch(path, true, channel.get_write())` to redirect the target's stdout. The assembly targets write register values to stdout, and tests read them back via `channel.read()` for verification.
 - The library is being refactored to move debugger primitives out of `tools/gsdb.cpp` into `libgsdb`.
 
 ## Running the Debugger
