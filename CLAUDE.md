@@ -80,7 +80,9 @@ ln -s build/compile_commands.json .
 - **`error` factory pattern**: Inherits `std::runtime_error`. Private constructor with static `send()` and `send_errno()` factories. `send_errno()` appends `strerror(errno)`.
 - **X-macro register table** (`detail/registers.inc`): Included twice in `register_info.hpp` — once to generate the `register_id` enum, once to populate `g_register_infos[]`. To add a register, add one line in `registers.inc`. Lookup helpers: `register_info_by_id()`, `register_info_by_name()`, `register_info_by_dwarf()`.
 - **Register read/write flow**: `wait_on_signal()` triggers `read_all_registers()`, populating `registers::data_` via `PTRACE_GETREGS` (GPRs), `PTRACE_GETFPREGS` (FPRs), and `PTRACE_PEEKUSER` (debug registers dr0–dr7). Writing routes through `process::write_gprs()` / `write_fprs()` / `write_user_area()` depending on register type.
+- **Breakpoints**: `breakpoint_site` represents a software breakpoint at a `virt_addr`. Private constructor; only `process` can create them (via `friend`). Each site gets a unique auto-incrementing `id_type` id. Stores the original byte (`saved_data_`) displaced by the `int3` opcode. `enable()`/`disable()` toggle patching. `stoppoint_collection<T>` is a generic header-only template container (constrained by `stoppoint_concept` C++20 concept) that manages stoppoints by id or address; will also be used for watchpoints/hardware breakpoints later. `process` stores breakpoints in `stoppoint_collection<breakpoint_site>` and exposes `create_breakpoint_site(virt_addr)` to add them.
 - **Pipe-based test communication**: Register tests use `gsdb::pipe` with `process::launch(path, true, channel.get_write())` to redirect the target's stdout. The assembly targets write register values to stdout, and tests read them back via `channel.read()` for verification.
+- **Utility headers**: `bit.hpp` provides `from_bytes<T>`, `as_bytes`, `to_byte128/64` for safe type-punning via `memcpy`. `parse.hpp` provides `to_integral<T>`, `to_float<T>`, and `parse_vector<N>` for parsing user input (register values). `types.hpp` defines `virt_addr` (strong-typed virtual address) and `byte64`/`byte128` aliases.
 - The library is being refactored to move debugger primitives out of `tools/gsdb.cpp` into `libgsdb`.
 
 ## Running the Debugger
@@ -93,7 +95,7 @@ ln -s build/compile_commands.json .
 ./build/tools/gsdb -p <pid>
 ```
 
-The REPL supports `continue` (prefix-matched, so `c` works). Empty input repeats the last command.
+The REPL supports `continue` and `register` commands (prefix-matched, so `c` works for continue). `help` shows available commands. Empty input repeats the last command.
 
 ## Dependencies
 
@@ -112,3 +114,5 @@ Clangd may report spurious errors like `no type named '_Tp_alloc_type'` in `std:
 - `.clang-format`: Google style, 4-space indentation
 - All code lives in the `gsdb` namespace
 - Compiler flags: `-Wall -Wfatal-errors -Wextra -Werror -g -O1` (warnings are errors)
+- Resource-owning types use private constructors with `friend` access (see `process`, `registers`, `breakpoint_site`)
+- Copy operations are deleted on resource types; move may be allowed where appropriate

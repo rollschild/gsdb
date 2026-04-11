@@ -6,9 +6,12 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <libgsdb/stoppoint_collection.hpp>
 #include <memory>
 #include <optional>
+#include <vector>
 
+#include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/registers.hpp"
 #include "libgsdb/types.hpp"
@@ -58,6 +61,18 @@ class process {
     void write_fprs(const user_fpregs_struct& fprs);
     void write_gprs(const user_regs_struct& gprs);
 
+    /**
+     * Create a breakpoint site at a give virtual address
+     */
+    breakpoint_site& create_breakpoint_site(virt_addr address);
+
+    stoppoint_collection<breakpoint_site>& breakpoint_sites() {
+        return breakpoint_sites_;
+    }
+    const stoppoint_collection<breakpoint_site>& breakpoint_sites() const {
+        return breakpoint_sites_;
+    }
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -74,6 +89,10 @@ class process {
     // populate registers_ when the process halts
     void read_all_registers();
     std::unique_ptr<registers> registers_;
+
+    // std::vector<std::unique_ptr<breakpoint_site>> breakpoint_sites_;
+
+    stoppoint_collection<breakpoint_site> breakpoint_sites_;
 };
 }  // namespace gsdb
 

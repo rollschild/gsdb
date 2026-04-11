@@ -151,3 +151,30 @@ movq %rsp, %rbp
   - the syscall ID goes in `rax`;
   - subsequent arguments go in `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`;
   - and the return value of the syscall is stored in `rax`
+
+### Breakpoints
+
+#### Hardware vs. Software Breakpoints
+
+Hardware breakpoints involve setting architecture-specific registers to produce breaks for you.
+
+Whereas software breakpoints involve modifying the machine instructions in the process’s memory.
+
+The number of hardware breakpoints is limited by the number of debug registers in the system. On x64, there are only four hardware breakpoint registers.
+
+Hardware breakpoints have the powerful ability to trigger breaks if a given address is executed, written to, or read from. Software breakpoints can trigger breaks on execution only.
+
+Hardware breakpoints also enable the debugging of program exploits that involve overwriting memory with executable code, so they can be useful in security and reverse engineering situations.
+
+We set software breakpoints by modifying the executing code on the fly.
+
+The x64 architecture has an **interrupt vector table** that the operating system can use to register handlers for various events, such as dividing by zero, accessing protected memory, or executing invalid opcodes.
+
+When the processor executes the int3 instruction, it passes control to the breakpoint interrupt handler, which—in the case of Linux—signals the process with a SIGTRAP.
+
+Interrupt vector table — The OS registers handler functions for CPU exceptions
+(divide-by-zero, page faults, etc.). Each exception type has a numbered slot in this table.
+
+In short: `int3` → CPU exception → kernel handler → SIGTRAP → ptrace notifies debugger.
+
+To enable a breakpoint site, we need to replace the instruction at the given address with an `int3` instruction, which we encode as `0xcc`.
