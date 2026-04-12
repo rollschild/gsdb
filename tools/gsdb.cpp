@@ -46,6 +46,7 @@ void print_help(const std::vector<std::string>& args) {
 breakpoint  - Commands for operating on breakpoints
 continue    - Resume the process
 register    - Commands for operating on registers
+step        - Step over a single instruction
 )";
     } else if (is_prefix(args[1], "register")) {
         std::cerr << R"(Available commands:
@@ -321,6 +322,9 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
         print_help(args);
     } else if (is_prefix(command, "breakpoint")) {
         handle_breakpoint_command(*process, args);
+    } else if (is_prefix(command, "step")) {
+        auto reason = process->step_instruction();
+        print_stop_reason(*process, reason);
     } else {
         std::cerr << "Unknown command!\n";
     }

@@ -36,6 +36,11 @@ class process {
 
     void resume();
     stop_reason wait_on_signal();
+    /**
+     * Returns a stop reason that describes why the process halted after
+     * stepping
+     */
+    stop_reason step_instruction();
     pid_t pid() const { return pid_; }
     process_state state() const { return state_; }
 

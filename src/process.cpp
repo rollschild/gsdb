@@ -259,3 +259,27 @@ gsdb::breakpoint_site& gsdb::process::create_breakpoint_site(
     return breakpoint_sites_.push(
         std::unique_ptr<breakpoint_site>(new breakpoint_site(*this, address)));
 }
+
+gsdb::stop_reason gsdb::process::step_instruction() {
+    // track the breakpoint site at which the process is currently stopped
+    std::optional<breakpoint_site*> to_reenable;
+    auto pc = get_pc();
+    if (breakpoint_sites_.enabled_stoppoint_at_address(pc)) {
+        // we must declare bp as a reference, so that we can safely store a
+        // pointer to it in a variable declared in the enclosing scope
+        auto& bp = breakpoint_sites_.get_by_address(pc);
+        bp.disable();
+        to_reenable = &bp;
+    }
+
+    if (ptrace(PTRACE_SINGLESTEP, pid_, nullptr, nullptr) < 0) {
+        error::send_errno("Could not single step!");
+    }
+
+    auto reason = wait_on_signal();
+    if (to_reenable) {
+        to_reenable.value()->enable();
+    }
+
+    return reason;
+}
