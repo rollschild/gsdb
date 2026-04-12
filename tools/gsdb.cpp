@@ -24,11 +24,13 @@
 #include <variant>
 #include <vector>
 
+#include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/error.hpp"
 #include "libgsdb/parse.hpp"
 #include "libgsdb/process.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/registers.hpp"
+#include "libgsdb/types.hpp"
 
 namespace {
 [[maybe_unused]]
@@ -41,6 +43,7 @@ void print_help(const std::vector<std::string>& args) {
     if (args.size() == 1) {
         // raw string literal
         std::cerr << R"(Available commands:
+breakpoint  - Commands for operating on breakpoints
 continue    - Resume the process
 register    - Commands for operating on registers
 )";
@@ -50,6 +53,14 @@ read
 read <register>
 read all
 write <register> <value>
+)";
+    } else if (is_prefix(args[1], "breakpoint")) {
+        std::cerr << R"(Available commands:
+list
+delete <id>
+disable <id>
+enable <id>
+set <address>
 )";
     } else {
         std::cerr << "No help available on that\n";
@@ -67,8 +78,10 @@ std::unique_ptr<gsdb::process> attach(int argc, const char** argv) {
         return gsdb::process::attach(pid);
     } else {
         // passing program name
-        const char* program_path = argv[1];
-        return gsdb::process::launch(program_path);
+        auto program_path = argv[1];
+        auto proc = gsdb::process::launch(program_path);
+        std::print("Launched process with PID {}\n", proc->pid());
+        return proc;
     }
 }
 
@@ -85,7 +98,7 @@ std::vector<std::string> split(std::string_view str, char delimiter) {
 }
 
 void print_stop_reason(const gsdb::process& process, gsdb::stop_reason reason) {
-    std::cout << "Process " << process.pid() << ' ';
+    // std::cout << "Process " << process.pid() << ' ';
     std::string message;
 
     switch (reason.reason) {
@@ -237,6 +250,61 @@ void handle_register_command(gsdb::process& process,
     }
 }
 
+void handle_breakpoint_command(gsdb::process& process,
+                               const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        print_help({"help", "breakpoint"});
+        return;
+    }
+
+    auto command = args[1];
+    if (is_prefix(command, "list")) {
+        // breakpoint list
+        if (process.breakpoint_sites().empty()) {
+            std::print("No breakpoints set\n");
+        } else {
+            std::print("Current breakpoints:\n");
+            process.breakpoint_sites().for_each([](auto& site) {
+                std::print("{}: address = {:#x}, {}\n", site.id(),
+                           site.address().addr(),
+                           site.is_enabled() ? "enabled" : "disabled");
+            });
+        }
+        return;
+    }
+
+    if (args.size() < 3) {
+        print_help({"help", "breakpoint"});
+        return;
+    }
+    if (is_prefix(command, "set")) {
+        auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
+        if (!address) {
+            std::print(stderr,
+                       "Breakpoint command expects address in hexadecimal, "
+                       "prefixed with '0x'\n");
+            return;
+        }
+
+        process.create_breakpoint_site(gsdb::virt_addr{*address}).enable();
+        return;
+    }
+
+    auto id = gsdb::to_integral<gsdb::breakpoint_site::id_type>(args[2]);
+    if (!id) {
+        std::cerr << "Command expects breakpoint ID!";
+        return;
+    }
+
+    if (is_prefix(command, "enable")) {
+        process.breakpoint_sites().get_by_id(*id).enable();
+    } else if (is_prefix(command, "disable")) {
+        process.breakpoint_sites().get_by_id(*id).disable();
+    } else if (is_prefix(command, "delete")) {
+        process.breakpoint_sites().remove_by_id(*id);
+    }
+}
+
 void handle_command(std::unique_ptr<gsdb::process>& process,
                     std::string_view line) {
     auto args = split(line, ' ');
@@ -251,6 +319,8 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
         handle_register_command(*process, args);
     } else if (is_prefix(command, "help")) {
         print_help(args);
+    } else if (is_prefix(command, "breakpoint")) {
+        handle_breakpoint_command(*process, args);
     } else {
         std::cerr << "Unknown command!\n";
     }

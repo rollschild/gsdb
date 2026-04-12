@@ -56,6 +56,13 @@ class process {
             get_registers().read_by_id_as<std::uint64_t>(register_id::rip)};
     }
 
+    /**
+     * Set program pointer
+     */
+    void set_pc(virt_addr address) {
+        get_registers().write_by_id(register_id::rip, address.addr());
+    }
+
     void write_user_area(std::size_t offset, std::uint64_t data);
 
     void write_fprs(const user_fpregs_struct& fprs);

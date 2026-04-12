@@ -21,6 +21,23 @@ gsdb::breakpoint_site::breakpoint_site(process& proc, virt_addr address)
     id_ = get_next_id();
 }
 
+/* On x86-64, the CPU's execution cycle is: fetch the instruction
+   at rip, advance rip past it, then execute. So when the CPU
+  hits the 0xcc byte at, say, address 0x4000:
+
+  1. It fetches the 1-byte int3 at rip = 0x4000
+  2. It advances rip to 0x4001 (past the 1-byte instruction)
+  3. It executes int3, which raises SIGTRAP and stops the
+  process
+
+  By the time the debugger gets control, rip is already 0x4001 —
+   one byte past where the breakpoint was placed. The original
+  instruction that lived at 0x4000 hasn't executed at all (it
+  was replaced by 0xcc), but the PC has moved past it.
+
+  That's why the fix-up subtracts 1: to point rip back at 0x4000
+   so the debugger can restore the original byte and re-execute
+  the real instruction. */
 void gsdb::breakpoint_site::enable() {
     if (is_enabled_) return;
 

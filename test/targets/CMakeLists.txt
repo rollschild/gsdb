@@ -1,9 +1,25 @@
-add_executable(run_endlessly run_endlessly.cpp)
-add_executable(end_immediately end_immediately.cpp)
-add_executable(reg_write reg_write.s)
-add_executable(reg_read reg_read.s)
+function(add_test_cpp_target name)
+  add_executable(${name} "${name}.cpp")
+  # cmake-format: off
+  # `-pie`: tells compiler/assembler to generate position-independent executable code 
+  # -g: generate debug info
+  # -O0: disable optimizations
+  # cmake-format: on
+  target_compile_options(${name} PRIVATE -g -O0 -pie)
 
-# `-pie`: tells compiler/assembler to generate position-independent executable
-# code
-target_compile_options(reg_write PRIVATE -pie)
-target_compile_options(reg_read PRIVATE -pie)
+  # Ensure whenever we build the `tests` target, we also build the test programs
+  add_dependencies(tests ${name})
+endfunction()
+
+function(add_test_asm_target name)
+  add_executable(${name} "${name}.s")
+  target_compile_options(${name} PRIVATE -pie)
+  add_dependencies(tests ${name})
+endfunction()
+
+add_test_cpp_target(run_endlessly)
+add_test_cpp_target(end_immediately)
+add_test_cpp_target(hello_gsdb)
+
+add_test_asm_target(reg_write)
+add_test_asm_target(reg_read)

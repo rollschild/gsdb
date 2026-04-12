@@ -178,3 +178,27 @@ Interrupt vector table — The OS registers handler functions for CPU exceptions
 In short: `int3` → CPU exception → kernel handler → SIGTRAP → ptrace notifies debugger.
 
 To enable a breakpoint site, we need to replace the instruction at the given address with an `int3` instruction, which we encode as `0xcc`.
+
+#### Determine where to set breakpoints
+
+Today, many compilers produce **position-independent executables (PIEs)** _by default_. These executables don’t expect to be loaded at a specific memory address; they can be loaded anywhere and still work.
+
+As such, memory addresses within PIEs aren’t absolute virtual addresses, they’re _offsets_ from the start of the final load address of the binary.
+
+PIEs exist to support **address space layout randomization (ASLR)**, a protection against malicious code that takes advantage of known virtual addresses to attack programs.
+
+To test whether a given executable is PIE: `file <executable>`. Something like `ELF 64-bit LSB pid executable`. or `ELF 64-bit LSB shared object`.
+
+To _globally_ disable ASLR, `echo 0 > /proc/sys/kernel/randomize_va_space`.
+
+The `personality` syscall allows you to change some execution properties for processes, like whether they’re limited to 32-bit addresses or whether ASLR is enabled.
+
+We can find information about where the system loaded programs in memory at `/proc/<pid>/maps`.
+
+```txt
+load address of the instruction = load address of the segment + instruction's file address - segment's start file address
+```
+
+`readelf -S ./build/test/targets/hello_gsdb`
+
+After setting the breakpoint, if you want to continue - the solution is to set the program counter back by 1 byte if we stop at a breakpoint. Then, to resume the process, we can disable the breakpoint, step over a single instruction, re-enable the breakpoint, and resume.

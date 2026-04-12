@@ -1,3 +1,4 @@
+#include <sys/personality.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
 #include <sys/user.h>
@@ -51,6 +52,25 @@ gsdb::process::~process() {
  * Force the process to resume and update its tracked running state
  */
 void gsdb::process::resume() {
+    auto pc = get_pc();
+    // First, check if we are at breakpoint
+    if (breakpoint_sites_.enabled_stoppoint_at_address(pc)) {
+        auto& bp = breakpoint_sites_.get_by_address(pc);
+        // if at breakpoint, disable it
+        bp.disable();
+        if (ptrace(PTRACE_SINGLESTEP, pid_, nullptr, nullptr) < 0) {
+            // execute a single instruction
+            error::send_errno("Failed to single step!");
+        }
+        int wait_status;
+        // wait until the inferior has executed the instruction and halted
+        if (waitpid(pid_, &wait_status, 0) < 0) {
+            error::send_errno("waitpid failed!");
+        }
+        // re-enable the breakpoint - patch 0xcc back in, before continuing the
+        // process and setting the state to running
+        bp.enable();
+    }
     if (ptrace(PTRACE_CONT, pid_, nullptr, nullptr) < 0) {
         error::send_errno("Could NOT resume");
     }
@@ -83,6 +103,15 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
     // it is stopped
     if (is_attached_ and state_ == process_state::stopped) {
         read_all_registers();
+
+        // If process stopped due to `SIGTRAP` and the address 1 byte below the
+        // program counter is an enabled breakpoint, we should fix up the
+        // program counter to point to the breakpoint
+        auto instr_begin = get_pc() - 1;
+        if (reason.info == SIGTRAP and
+            breakpoint_sites_.enabled_stoppoint_at_address(instr_begin)) {
+            set_pc(instr_begin);
+        }
     }
 
     return reason;
@@ -106,6 +135,7 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(
     // be debugged
     if (pid == 0) {
         // child process
+        personality(ADDR_NO_RANDOMIZE);  // NO ASLR
         channel.close_read();
 
         if (stdout_replacement) {

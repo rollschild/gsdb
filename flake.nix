@@ -26,6 +26,7 @@
         {
           devShell = pkgs.mkShell rec {
             name = "gsdb";
+            hardeningDisable = [ "fortify" ];
 
             packages = with pkgs; [ ];
 
