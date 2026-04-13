@@ -202,3 +202,34 @@ load address of the instruction = load address of the segment + instruction's fi
 `readelf -S ./build/test/targets/hello_gsdb`
 
 After setting the breakpoint, if you want to continue - the solution is to set the program counter back by 1 byte if we stop at a breakpoint. Then, to resume the process, we can disable the breakpoint, step over a single instruction, re-enable the breakpoint, and resume.
+
+The binary's **entry point**: the function called at the start of the program.
+On Linux, it's called `_start`.
+
+In short: file offset = "where in the .elf file on disk", file
+address = "where in the virtual address space the ELF says it
+should be mapped."
+
+`file_address` and `address` are both file addresses (virtual addresses from the ELF),
+just for different things:
+
+- file_address — the file address of the entry point
+  (header.e_entry), passed into get_section_load_bias.
+- address — the file address of the start of the section (e.g.
+  .text) that contains the entry point, parsed from readelf
+  output.
+
+The entry point lives somewhere inside a section. So
+file_address - address is how many bytes into that section the
+entry point sits.
+
+For a concrete example:
+
+.text section: address (VA) = 0x1060, offset (on disk) =
+0x0060
+entry point: file_address (VA) = 0x1080
+
+- file_address - address = 0x1080 - 0x1060 = 0x20 (entry point
+  is 32 bytes into .text)
+- - offset = 0x20 + 0x0060 = 0x0080 (entry point is at byte
+    0x80 in the file on disk)

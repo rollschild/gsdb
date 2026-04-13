@@ -1,11 +1,16 @@
+#include <elf.h>
 #include <sys/types.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <cerrno>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <libgsdb/bit.hpp>
 #include <libgsdb/process.hpp>
+#include <regex>
 #include <string>
 
 #include "libgsdb/error.hpp"
@@ -32,6 +37,85 @@ char get_process_status(pid_t pid) {
     auto index_of_last_paren = data.rfind(')');
     auto index_of_status_indicator = index_of_last_paren + 2;
     return data[index_of_status_indicator];
+}
+
+std::int64_t get_section_load_bias(std::filesystem::path path,
+                                   Elf64_Addr file_address) {
+    // `readelf -WS <program name>`
+    // Prints out the section headers with the entry for each section on a
+    // single line
+    auto command = std::string("readelf -WS ") + path.string();
+    // execute the command, also
+    // open a pipe from which we read its output
+    auto pipe = popen(command.c_str(), "r");
+
+    // (file address) (file offset) (size of the section)
+    std::regex text_regex(R"(PROGBITS\s+(\w+)\s+(\w+)\s+(\w+))");
+    char* line = nullptr;
+    std::size_t len = 0;
+    // Use the C version here, because C++ version operates on stream rather
+    // than file descriptor
+    // This function dynamically allocates a string that stores a line and
+    // stores it in the first argument
+    while (getline(&line, &len, pipe) != -1) {
+        std::cmatch groups;
+        if (std::regex_search(line, groups, text_regex)) {
+            auto address = std::stoul(groups[1], nullptr, 16);
+            auto offset = std::stoul(groups[2], nullptr, 16);
+            auto size = std::stoul(groups[3], nullptr, 16);
+
+            if (address <= file_address and file_address < (address + size)) {
+                free(line);
+                pclose(pipe);
+                return address - offset;
+            }
+        }
+
+        free(line);
+        line = nullptr;
+    }
+
+    pclose(pipe);
+    gsdb::error::send("Could not find section load bias!");
+}
+
+/* Computes the file offset of the binary's entry point (_start), i.e., where in
+  the ELF file on disk the entry point's code lives. */
+std::int64_t get_entry_point_offset(std::filesystem::path path) {
+    std::ifstream elf_file(path);
+
+    Elf64_Ehdr header;
+    // Reads ELF header, which is always at the very start of the file.
+    elf_file.read(reinterpret_cast<char*>(&header), sizeof(header));
+
+    // entry point's file address
+    // the virtual address the ELF assigns to `_start`
+    auto entry_file_address = header.e_entry;
+    // load bias: difference between a section's file address (virtual address
+    // in ELF) and its file offset (position on disk)
+    auto load_bias = get_section_load_bias(path, entry_file_address);
+    // where **entry point** is on disk
+    return entry_file_address - load_bias;
+}
+
+virt_addr get_load_address(pid_t pid, std::int64_t offset) {
+    std::ifstream maps("/proc/" + std::to_string(pid) + "/maps");
+    // the `..(.).` is trying to match `r-xp`
+    std::regex map_regex(R"((\w+)-\w+\s+..(.).\s+(\w+))");
+
+    std::string data;
+    while (std::getline(maps, data)) {
+        std::smatch groups;
+        std::regex_search(data, groups, map_regex);
+
+        if (groups[2] == 'x') {
+            auto low_range = std::stol(groups[1], nullptr, 16);
+            auto file_offset = std::stol(groups[3], nullptr, 16);
+            return virt_addr(offset - file_offset + low_range);
+        }
+    }
+
+    gsdb::error::send("Could not find load address!");
 }
 }  // namespace
 
@@ -304,4 +388,45 @@ TEST_CASE("Can iterate breakpoint sites", "[breakpoint]") {
         [addr = uint64_t{42}](auto& site) mutable {
             REQUIRE(site.address().addr() == addr++);
         });
+}
+
+TEST_CASE("Breakpoint on address works", "[breakpoint]") {
+    bool close_on_exec = false;
+    gsdb::pipe channel(close_on_exec);
+
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/hello_gsdb", true,
+                                channel.get_write());
+    channel.close_write();
+
+    auto offset =
+        get_entry_point_offset(std::string(TARGETS_DIR) + "/hello_gsdb");
+    auto load_address = get_load_address(proc->pid(), offset);
+
+    proc->create_breakpoint_site(load_address).enable();
+    proc->resume();
+    auto reason = proc->wait_on_signal();
+
+    REQUIRE(reason.reason == process_state::stopped);
+    REQUIRE(reason.info == SIGTRAP);
+    REQUIRE(proc->get_pc() == load_address);
+
+    proc->resume();
+    reason = proc->wait_on_signal();
+
+    REQUIRE(reason.reason == process_state::exited);
+    REQUIRE(reason.info == 0);
+
+    auto data = channel.read();
+    REQUIRE(to_string_view(data) == "Hello, gsdb!\n");
+}
+
+TEST_CASE("Can remove breakpoint sites", "[breakpoint]") {
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/run_endlessly");
+    auto& site = proc->create_breakpoint_site(virt_addr{42});
+    proc->create_breakpoint_site(virt_addr{43});
+    REQUIRE(proc->breakpoint_sites().size() == 2);
+
+    proc->breakpoint_sites().remove_by_id(site.id());
+    proc->breakpoint_sites().remove_by_address(virt_addr{43});
+    REQUIRE(proc->breakpoint_sites().empty());
 }

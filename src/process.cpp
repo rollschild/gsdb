@@ -276,6 +276,7 @@ gsdb::stop_reason gsdb::process::step_instruction() {
         error::send_errno("Could not single step!");
     }
 
+    // wait until the single step over is completed
     auto reason = wait_on_signal();
     if (to_reenable) {
         to_reenable.value()->enable();
