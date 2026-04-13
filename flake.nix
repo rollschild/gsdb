@@ -80,6 +80,10 @@
             # '';
             shellHook = ''
               export SHELL="${pkgs.zsh}/bin/zsh"
+              if [ -f CMakeLists.txt ]; then
+                cmake -S . -B build > /dev/null 2>&1
+                [ ! -L compile_commands.json ] && ln -sf build/compile_commands.json .
+              fi
               exec ${pkgs.zsh}/bin/zsh
               eval "$(starship init zsh)"
             '';
