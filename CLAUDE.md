@@ -23,6 +23,7 @@ The flake uses GCC (not Clang). The dev shell automatically switches to zsh with
 
 ```bash
 # Configure (out-of-source build required; in-source builds are blocked)
+# NOTE: `nix develop` shell hook auto-runs this and symlinks compile_commands.json
 cmake -S . -B build
 
 # Build everything
@@ -44,11 +45,9 @@ cd build && ctest
 
 # Run tests by tag
 ./build/test/tests "[process]"
-
-# Generate compile_commands.json (for clangd)
-cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-ln -s build/compile_commands.json .
 ```
+
+`compile_commands.json` is auto-generated and symlinked by CMakeLists.txt (no manual step needed).
 
 ## Architecture
 
@@ -72,6 +71,7 @@ ln -s build/compile_commands.json .
 
 - `[process]` — process lifecycle tests (launch, attach, resume)
 - `[register]` — register read/write tests
+- `[breakpoint]` — breakpoint creation, lookup, removal, and address-hit tests
 
 ### Key design patterns
 
@@ -95,7 +95,15 @@ ln -s build/compile_commands.json .
 ./build/tools/gsdb -p <pid>
 ```
 
-The REPL supports `continue` and `register` commands (prefix-matched, so `c` works for continue). `help` shows available commands. Empty input repeats the last command.
+REPL commands (all prefix-matched, so `c` works for `continue`):
+- `continue` — resume the process
+- `step` — step over a single instruction
+- `register read [<name>|all]` — read registers (defaults to GPRs; `all` shows all types)
+- `register write <name> <value>` — write a register
+- `breakpoint set <address>` / `list` / `enable <id>` / `disable <id>` / `delete <id>`
+- `help [command]` — show help
+
+Empty input repeats the last command.
 
 ## Dependencies
 

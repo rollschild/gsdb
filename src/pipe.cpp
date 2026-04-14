@@ -8,6 +8,8 @@
 #include <vector>
 
 gsdb::pipe::pipe(bool close_on_exec) {
+    // O_CLOEXEC is a file descriptor flag that causes the fd to be
+    // automatically closed when the process calls exec()
     if (pipe2(fds_, close_on_exec ? O_CLOEXEC : 0) < 0) {
         error::send_errno("Pipe creation failed!");
     }

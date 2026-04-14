@@ -17,6 +17,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Symlink so clangd finds it at the project root
+if(NOT EXISTS ${CMAKE_SOURCE_DIR}/compile_commands.json)
+  file(CREATE_LINK ${CMAKE_BINARY_DIR}/compile_commands.json
+       ${CMAKE_SOURCE_DIR}/compile_commands.json SYMBOLIC)
+endif()
+
 set(CMAKE_C_COMPILER gcc)
 if(MSVC)
   # warning level 4

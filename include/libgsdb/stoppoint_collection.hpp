@@ -172,12 +172,18 @@ template <stoppoint_concept Stoppoint>
 void stoppoint_collection<Stoppoint>::remove_by_id(
     typename Stoppoint::id_type id) {
     auto it = find_by_id(id);
+    if (it == stoppoints_.end()) {
+        return;
+    }
     (**it).disable();
     stoppoints_.erase(it);
 }
 template <stoppoint_concept Stoppoint>
 void stoppoint_collection<Stoppoint>::remove_by_address(virt_addr address) {
     auto it = find_by_address(address);
+    if (it == stoppoints_.end()) {
+        return;
+    }
     (**it).disable();
     stoppoints_.erase(it);
 }

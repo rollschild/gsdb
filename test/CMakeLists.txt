@@ -1,3 +1,5 @@
+include(Catch)
+
 # How tests link
 add_executable(tests tests.cpp)
 # Catch2WithMain supplies its own main function, which deals command line args
@@ -10,3 +12,5 @@ add_subdirectory("targets")
 # currently being processed
 target_compile_definitions(
   tests PRIVATE TARGETS_DIR="${CMAKE_CURRENT_BINARY_DIR}/targets")
+
+catch_discover_tests(tests)
