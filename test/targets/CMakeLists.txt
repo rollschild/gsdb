@@ -20,6 +20,7 @@ endfunction()
 add_test_cpp_target(run_endlessly)
 add_test_cpp_target(end_immediately)
 add_test_cpp_target(hello_gsdb)
+add_test_cpp_target(memory)
 
 add_test_asm_target(reg_write)
 add_test_asm_target(reg_read)

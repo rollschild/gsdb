@@ -233,3 +233,11 @@ entry point: file_address (VA) = 0x1080
   is 32 bytes into .text)
 - - offset = 0x20 + 0x0060 = 0x0080 (entry point is at byte
     0x80 in the file on disk)
+
+### Memory and Disassembly
+
+`PTRACE_PEEKDATA` & `PTRACE_POKEDATA` work on 64-bits at a time.
+
+`process_vm_readv` & `process_vm_writev` and the `/proc/<pid>/mem` file - both support reading/writing larger chunks.
+
+_HOWEVER_, `process_vm_writev` does _NOT_ support writing to protected areas of memory, like code segments.

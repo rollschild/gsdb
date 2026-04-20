@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -429,4 +430,32 @@ TEST_CASE("Can remove breakpoint sites", "[breakpoint]") {
     proc->breakpoint_sites().remove_by_id(site.id());
     proc->breakpoint_sites().remove_by_address(virt_addr{43});
     REQUIRE(proc->breakpoint_sites().empty());
+}
+
+TEST_CASE("Reading and writing memory works", "[memory]") {
+    bool close_on_exec = false;
+    gsdb::pipe channel(close_on_exec);
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/memory", true,
+                                channel.get_write());
+    channel.close_write();
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    auto a_pointer = from_bytes<std::uint64_t>(channel.read().data());
+    auto data_vec = proc->read_memory(virt_addr{a_pointer}, 8);
+    auto data = from_bytes<std::uint64_t>(data_vec.data());
+    REQUIRE(data == 0xcafecafe);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    auto b_pointer = from_bytes<std::uint64_t>(channel.read().data());
+    proc->write_memory(virt_addr{b_pointer}, {as_bytes("Hello, gsdb!"), 13});
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    auto read = channel.read();
+    REQUIRE(to_string_view(read) == "Hello, gsdb!");
 }

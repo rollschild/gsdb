@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/user.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <libgsdb/stoppoint_collection.hpp>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <vector>
 
+#include "libgsdb/bit.hpp"
 #include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/registers.hpp"
@@ -83,6 +85,19 @@ class process {
     }
     const stoppoint_collection<breakpoint_site>& breakpoint_sites() const {
         return breakpoint_sites_;
+    }
+
+    std::vector<std::byte> read_memory(virt_addr address,
+                                       std::size_t amount) const;
+    void write_memory(virt_addr address, span<const std::byte> data);
+
+    /**
+     * Read a block of memory as an object of a given type
+     */
+    template <class T>
+    T read_memory_as(virt_addr address) const {
+        auto data = read_memory(address, sizeof(T));
+        return from_bytes<T>(data.data());
     }
 
    private:

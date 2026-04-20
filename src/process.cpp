@@ -1,6 +1,7 @@
 #include <sys/personality.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -9,15 +10,19 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <libgsdb/error.hpp>
 #include <libgsdb/process.hpp>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "libgsdb/bit.hpp"
 #include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/pipe.hpp"
 #include "libgsdb/register_info.hpp"
+#include "libgsdb/types.hpp"
 
 namespace {
 void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
@@ -283,4 +288,81 @@ gsdb::stop_reason gsdb::process::step_instruction() {
     }
 
     return reason;
+}
+
+/**
+ * Read `amount` bytes from the address space of a traced process into the
+ * debugger's own memory
+ */
+std::vector<std::byte> gsdb::process::read_memory(virt_addr address,
+                                                  std::size_t amount) const {
+    std::vector<std::byte> ret(amount);
+
+    /* iovec (I/O vector) is a POSIX struct defined in <sys/uio.h>:
+
+    struct iovec {
+      void  *iov_base;  // starting address of buffer
+      size_t iov_len;   // size of buffer
+    };
+
+    It describes a contiguous region of memory — a base pointer
+    and a length. It's the standard building block for
+    scatter/gather I/O operations (like readv, writev, and here
+    process_vm_readv). */
+    // description of memeory involved in the data transfer
+    // destination of memory copy
+    iovec local_desc{ret.data(), ret.size()};
+
+    // The kernel _gathers_ from the remote iovecs and _scatters_ into
+    // the local iovec (in practice it fills the local buffer
+    // sequentially). Returns the number of bytes read, or -1 on
+    // error.
+    std::vector<iovec> remote_descs;
+
+    while (amount > 0) {
+        // split the range of data to be copied on memory page boundaries
+        // assuming 4KiB (4096, 0x1000) pages - default on x64
+        // 0xfff - 12-bit mask, matching the 12-bit page offset in a 4096-byte
+        // page (2 ^ 12 = 4096)
+        auto up_to_next_page = 0x1000 - (address.addr() & 0xfff);
+        auto chunk_size = std::min(amount, up_to_next_page);
+        remote_descs.push_back(
+            {reinterpret_cast<void*>(address.addr()), chunk_size});
+        amount -= chunk_size;
+        address += chunk_size;
+    }
+
+    if (process_vm_readv(pid_, &local_desc, /*liovcnt=*/1, remote_descs.data(),
+                         /*riovcnt=*/remote_descs.size(), /*flags=*/0) < 0) {
+        error::send_errno("Could not read process memory");
+    }
+
+    return ret;
+}
+
+void gsdb::process::write_memory(virt_addr address,
+                                 span<const std::byte> data) {
+    std::size_t written = 0;
+    while (written < data.size()) {
+        auto remaining = data.size() - written;
+        std::uint64_t word;
+        if (remaining >= 8) {
+            word = from_bytes<std::uint64_t>(data.begin() + written);
+        } else {
+            auto read = read_memory(address + written, 8);
+            // cast to char* so that we can use `memcpy` on it
+            auto word_data = reinterpret_cast<char*>(&word);
+            std::memcpy(word_data, data.begin() + written, remaining);
+            // restore the original data
+            // make sure not to overwrite the `8 - remaining` part of the data
+            std::memcpy(word_data + remaining, read.data() + remaining,
+                        8 - remaining);
+        }
+
+        if (ptrace(PTRACE_POKEDATA, pid_, address + written, word) < 0) {
+            error::send_errno("Failed to write memory!");
+        }
+
+        written += 8;
+    }
 }

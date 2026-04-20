@@ -45,6 +45,7 @@ void print_help(const std::vector<std::string>& args) {
         std::cerr << R"(Available commands:
 breakpoint  - Commands for operating on breakpoints
 continue    - Resume the process
+memory      - Commands for operating on memory
 register    - Commands for operating on registers
 step        - Step over a single instruction
 )";
@@ -62,6 +63,12 @@ delete <id>
 disable <id>
 enable <id>
 set <address>
+)";
+    } else if (is_prefix(args[1], "memory")) {
+        std::cerr << R"(Available commands:
+read <address>
+read <address> <number-of-bytes>
+write <address> <bytes>
 )";
     } else {
         std::cerr << "No help available on that\n";
@@ -124,10 +131,35 @@ void print_stop_reason(const gsdb::process& process, gsdb::stop_reason reason) {
     std::print("Process {} {}\n", process.pid(), message);
 }
 
+template <std::input_iterator It, std::sentinel_for<It> S>
+std::string format_join(It first, S last, std::string_view separator,
+                        std::string_view byte_fmt = "{:#04x}") {
+    std::string res;
+    std::string_view sep = "";
+    for (; first != last; ++first) {
+        res += sep;
+        if constexpr (std::same_as<std::iter_value_t<It>, std::byte>) {
+            auto val = std::to_integer<std::uint8_t>(*first);
+            /*
+            std::format_to(std::back_inserter(res), "{}{:#04x}", sep,
+                           std::to_integer<std::uint8_t>(*first));
+            */
+            std::vformat_to(std::back_inserter(res), byte_fmt,
+                            std::make_format_args(val));
+
+        } else {
+            std::format_to(std::back_inserter(res), "{}", *first);
+        }
+        sep = separator;
+    }
+    return res;
+}
+
 template <std::ranges::range T>
 // requires std::formattable<std::ranges::range_value_t<T>, char>
 std::string format_join(const T& t, std::string_view separator) {
-    std::string res;
+    return format_join(std::ranges::begin(t), std::ranges::end(t), separator);
+    /* std::string res;
     std::string_view sep = "";
     for (const auto& elem : t) {
         if constexpr (std::same_as<std::ranges::range_value_t<T>, std::byte>) {
@@ -139,7 +171,7 @@ std::string format_join(const T& t, std::string_view separator) {
         }
         sep = separator;
     }
-    return res;
+    return res; */
 }
 
 void handle_register_read(gsdb::process& process,
@@ -306,6 +338,65 @@ void handle_breakpoint_command(gsdb::process& process,
     }
 }
 
+void handle_memory_read_command(gsdb::process& process,
+                                const std::vector<std::string>& args) {
+    auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
+    if (!address) gsdb::error::send("Invalid address format!");
+
+    auto n_bytes = 32;
+    if (args.size() == 4) {
+        auto bytes_arg = gsdb::to_integral<std::size_t>(args[3]);
+        if (!bytes_arg) gsdb::error::send("Invalid number of bytes!");
+        n_bytes = *bytes_arg;
+    }
+
+    auto data = process.read_memory(gsdb::virt_addr{*address}, n_bytes);
+
+    // print out the memory
+    for (std::size_t i = 0; i < data.size(); i += 16) {
+        auto start = data.begin() + i;
+        auto end = data.begin() + std::min(i + 16, data.size());
+        std::print("{:#016x}: {}\n", *address + i,
+                   format_join(start, end, " ", "{:02x}"));
+    }
+}
+
+void handle_memory_write_command(gsdb::process& process,
+                                 const std::vector<std::string>& args) {
+    if (args.size() != 4) {
+        print_help({"help", "memory"});
+        return;
+    }
+
+    auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
+    if (!address) gsdb::error::send("Invalid address format!");
+
+    auto data = gsdb::parse_vector(args[3]);
+    process.write_memory(gsdb::virt_addr{*address}, {data.data(), data.size()});
+}
+
+/**
+ * Supports:
+ *  - memory read <address>
+ *  - memory read <address> <number of bytes>
+ *  - memory write <address> <values>
+ */
+void handle_memory_command(gsdb::process& process,
+                           const std::vector<std::string>& args) {
+    if (args.size() < 3) {
+        print_help({"help", "memory"});
+        return;
+    }
+
+    if (is_prefix(args[1], "read")) {
+        handle_memory_read_command(process, args);
+    } else if (is_prefix(args[1], "write")) {
+        handle_memory_write_command(process, args);
+    } else {
+        print_help({"help", "memory"});
+    }
+}
+
 void handle_command(std::unique_ptr<gsdb::process>& process,
                     std::string_view line) {
     auto args = split(line, ' ');
@@ -325,6 +416,8 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
     } else if (is_prefix(command, "step")) {
         auto reason = process->step_instruction();
         print_stop_reason(*process, reason);
+    } else if (is_prefix(command, "memory")) {
+        handle_memory_command(*process, args);
     } else {
         std::cerr << "Unknown command!\n";
     }

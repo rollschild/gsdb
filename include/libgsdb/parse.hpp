@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "libgsdb/error.hpp"
 
@@ -82,6 +83,33 @@ auto parse_vector(std::string_view text) {
 
     if (*c++ != ']') invalid();
     if (c != text.end()) invalid();
+
+    return bytes;
+}
+
+/**
+ * [0xff,0xff]
+ */
+inline auto parse_vector(std::string_view text) {
+    auto invalid = [] { gsdb::error::send("Invalid text format!"); };
+
+    std::vector<std::byte> bytes;
+    const char* c = text.data();
+    if (*c++ != '[') invalid();
+
+    while (*c != ']') {
+        auto byte = gsdb::to_integral<std::byte>({c, 4}, 16);
+        bytes.push_back(byte.value());
+        c += 4;  // parse 4 characters, like 0xff
+
+        // ensure we have either a comma or ']'
+        if (*c == ',')
+            ++c;
+        else if (*c != ']')
+            invalid();
+    }
+
+    if (++c != text.end()) invalid();
 
     return bytes;
 }
