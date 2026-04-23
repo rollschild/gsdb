@@ -84,6 +84,7 @@ set(${PROJECT_NAME}_INSTALL_CMAKEDIR
 # find_package(CURL REQUIRED)
 
 find_package(PkgConfig REQUIRED)
+find_package(zydis CONFIG REQUIRED)
 pkg_check_modules(libedit REQUIRED IMPORTED_TARGET libedit)
 
 if(ENABLE_TESTING)

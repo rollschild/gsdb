@@ -1,7 +1,23 @@
 # Use namespaced library targets. Creates _static_ library target.
-add_library(libgsdb process.cpp pipe.cpp registers.cpp breakpoint_site.cpp)
+add_library(libgsdb process.cpp pipe.cpp registers.cpp breakpoint_site.cpp
+                    disassembler.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
+#
+# Creates a namespaced alias for the libgsdb target.
+#
+# It lets other CMakeLists.txt files (in tools/ and test/) link against
+# gsdb::libgsdb instead of the bare name libgsdb. The benefits:
+#
+# 1. Namespace convention — the gsdb:: prefix makes it clear this is a
+#    project-internal library, matching the syntax you'd use if consuming it via
+#    find_package() from an external project.
+# 2. Typo protection — if you write target_link_libraries(foo gsdb::libgdbs)
+#    (typo), CMake errors immediately. With a bare name like libgdbs, CMake
+#    silently treats it as a linker flag (-llibgdbs), which fails much later with
+#    a confusing link error.
 add_library(gsdb::libgsdb ALIAS libgsdb)
+
+target_link_libraries(libgsdb PUBLIC Zydis::Zydis)
 
 # CMake automatically prepends `lib` on Unix. This is to override this behavior
 # so that output target name is libgsdb` instead of `liblibgsdb`

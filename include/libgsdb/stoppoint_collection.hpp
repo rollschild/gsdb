@@ -22,6 +22,8 @@ concept stoppoint_concept =
         { t.disable() } -> std::same_as<void>;  // type constraint
     } && requires(T t) {
         { t.enable() } -> std::same_as<void>;  // type constraint
+    } && requires(T t, virt_addr a, virt_addr b) {
+        { t.in_range(a, b) } -> std::convertible_to<bool>;
     };
 
 // This is a template - the implementations must go in the header file rather
@@ -54,6 +56,8 @@ class stoppoint_collection {
 
     void remove_by_id(typename Stoppoint::id_type id);
     void remove_by_address(virt_addr address);
+
+    std::vector<Stoppoint*> get_in_region(virt_addr low, virt_addr high) const;
 
     /**
      * Passed a function/lambda to be called with a reference to each breakpoint
@@ -201,6 +205,21 @@ void stoppoint_collection<Stoppoint>::for_each(F f) const {
     for (const auto& point : stoppoints_) {
         f(*point);
     }
+}
+
+/**
+ * Get the list of stop points between two addresses
+ */
+template <stoppoint_concept Stoppoint>
+std::vector<Stoppoint*> stoppoint_collection<Stoppoint>::get_in_region(
+    virt_addr low, virt_addr high) const {
+    std::vector<Stoppoint*> ret;
+    for (auto& site : stoppoints_) {
+        if (site->in_range(low, high)) {
+            ret.push_back(&*site);
+        }
+    }
+    return ret;
 }
 
 }  // namespace gsdb

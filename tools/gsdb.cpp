@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "libgsdb/breakpoint_site.hpp"
+#include "libgsdb/disassembler.hpp"
 #include "libgsdb/error.hpp"
 #include "libgsdb/parse.hpp"
 #include "libgsdb/process.hpp"
@@ -45,6 +46,7 @@ void print_help(const std::vector<std::string>& args) {
         std::cerr << R"(Available commands:
 breakpoint  - Commands for operating on breakpoints
 continue    - Resume the process
+disassemble - Disassemble machine code to assembly
 memory      - Commands for operating on memory
 register    - Commands for operating on registers
 step        - Step over a single instruction
@@ -70,10 +72,38 @@ read <address>
 read <address> <number-of-bytes>
 write <address> <bytes>
 )";
+    } else if (is_prefix(args[1], "disassemble")) {
+        std::cerr << R"(Available options:
+-c <number-of-instructions>
+-a <start-address>
+)";
     } else {
         std::cerr << "No help available on that\n";
     }
 }
+
+/*
+./build/tools/gsdb ./build/test/targets/hello_gsdb
+Launched process with PID 33042
+gsdb> break set 0x555555555147
+gsdb> c
+Process 33042 stopped with signal TRAP at 0x555555555147
+0x0000555555555147: call 0x0000555555555030
+0x000055555555514c: mov $0x00, %eax
+0x0000555555555151: pop %rbp
+0x0000555555555152: ret
+0x0000555555555153: add %dh, %bl
+gsdb>
+*/
+void print_disassembly(gsdb::process& process, gsdb::virt_addr address,
+                       std::size_t n_instructions) {
+    gsdb::disassembler dis(process);
+    auto instructions = dis.disassemble(n_instructions, address);
+    for (auto& instr : instructions) {
+        std::print("{:#018x}: {}\n", instr.address.addr(), instr.text);
+    }
+}
+
 /**
  * Launches, attaches to the given program name or PID.
  * Returns the PID of the inferior.
@@ -397,6 +427,41 @@ void handle_memory_command(gsdb::process& process,
     }
 }
 
+void handle_stop(gsdb::process& process, gsdb::stop_reason reason) {
+    print_stop_reason(process, reason);
+    if (reason.reason == gsdb::process_state::stopped) {
+        print_disassembly(process, process.get_pc(), 5);
+    }
+}
+/**
+ * `disassemble -c <n_instructions> -a <address>`
+ * Default to 5 instructions and the current program counter value
+ */
+void handle_disassemble_command(gsdb::process& process,
+                                const std::vector<std::string>& args) {
+    auto address = process.get_pc();
+    std::size_t n_instructions = 5;
+    auto it = args.begin() + 1;
+    while (it != args.end()) {
+        if (*it == "-a" and it + 1 != args.end()) {
+            ++it;
+            auto opt_addr = gsdb::to_integral<std::uint64_t>(*it++, 16);
+            if (!opt_addr) gsdb::error::send("Invalid address format!");
+            address = gsdb::virt_addr{*opt_addr};
+        } else if (*it == "-c" and it + 1 != args.end()) {
+            ++it;
+            auto opt_n = gsdb::to_integral<std::size_t>(*it++);
+            if (!opt_n) gsdb::error::send("Invalid instruction count!");
+            n_instructions = *opt_n;
+        } else {
+            print_help({"help", "disassemble"});
+            return;
+        }
+    }
+
+    print_disassembly(process, address, n_instructions);
+}
+
 void handle_command(std::unique_ptr<gsdb::process>& process,
                     std::string_view line) {
     auto args = split(line, ' ');
@@ -406,7 +471,7 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
         /*if (std::string_view{"continue"}.starts_with(command)) {*/
         process->resume();
         auto reason = process->wait_on_signal();
-        print_stop_reason(*process, reason);
+        handle_stop(*process, reason);
     } else if (is_prefix(command, "register")) {
         handle_register_command(*process, args);
     } else if (is_prefix(command, "help")) {
@@ -415,9 +480,11 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
         handle_breakpoint_command(*process, args);
     } else if (is_prefix(command, "step")) {
         auto reason = process->step_instruction();
-        print_stop_reason(*process, reason);
+        handle_stop(*process, reason);
     } else if (is_prefix(command, "memory")) {
         handle_memory_command(*process, args);
+    } else if (is_prefix(command, "disassemble")) {
+        handle_disassemble_command(*process, args);
     } else {
         std::cerr << "Unknown command!\n";
     }

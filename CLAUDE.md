@@ -55,7 +55,7 @@ cd build && ctest
  include/libgsdb/          (public headers)
  src/                      (library implementation)
         ↓
-    [libgsdb.a]  (CMake target: gsdb::libgsdb)
+    [libgsdb.a]  (CMake target: gsdb::libgsdb, links Zydis::Zydis)
         ↓                          ↓
  + PkgConfig::libedit       + Catch2::Catch2WithMain
         ↓                          ↓
@@ -72,6 +72,7 @@ cd build && ctest
 - `[process]` — process lifecycle tests (launch, attach, resume)
 - `[register]` — register read/write tests
 - `[breakpoint]` — breakpoint creation, lookup, removal, and address-hit tests
+- `[memory]` — memory read/write tests
 
 ### Key design patterns
 
@@ -82,6 +83,7 @@ cd build && ctest
 - **Register read/write flow**: `wait_on_signal()` triggers `read_all_registers()`, populating `registers::data_` via `PTRACE_GETREGS` (GPRs), `PTRACE_GETFPREGS` (FPRs), and `PTRACE_PEEKUSER` (debug registers dr0–dr7). Writing routes through `process::write_gprs()` / `write_fprs()` / `write_user_area()` depending on register type.
 - **Breakpoints**: `breakpoint_site` represents a software breakpoint at a `virt_addr`. Private constructor; only `process` can create them (via `friend`). Each site gets a unique auto-incrementing `id_type` id. Stores the original byte (`saved_data_`) displaced by the `int3` opcode. `enable()`/`disable()` toggle patching. `stoppoint_collection<T>` is a generic header-only template container (constrained by `stoppoint_concept` C++20 concept) that manages stoppoints by id or address; will also be used for watchpoints/hardware breakpoints later. `process` stores breakpoints in `stoppoint_collection<breakpoint_site>` and exposes `create_breakpoint_site(virt_addr)` to add them.
 - **Pipe-based test communication**: Register tests use `gsdb::pipe` with `process::launch(path, true, channel.get_write())` to redirect the target's stdout. The assembly targets write register values to stdout, and tests read them back via `channel.read()` for verification.
+- **Disassembler**: `disassembler` wraps the Zydis library to decode x86-64 instructions from process memory. Takes a `process&` reference. `disassemble(n, optional_address)` reads `n * 15` bytes (max x64 instruction size) via `read_memory_without_traps` (which replaces int3 bytes with saved originals from active breakpoint sites), decodes them with `ZydisDisassembleATT`, and returns a vector of `instruction{virt_addr, string}`. Defaults to disassembling from the current PC.
 - **Utility headers**: `bit.hpp` provides `from_bytes<T>`, `as_bytes`, `to_byte128/64` for safe type-punning via `memcpy`. `parse.hpp` provides `to_integral<T>`, `to_float<T>`, and `parse_vector<N>` for parsing user input (register values). `types.hpp` defines `virt_addr` (strong-typed virtual address) and `byte64`/`byte128` aliases.
 - The library is being refactored to move debugger primitives out of `tools/gsdb.cpp` into `libgsdb`.
 
@@ -101,13 +103,17 @@ REPL commands (all prefix-matched, so `c` works for `continue`):
 - `register read [<name>|all]` — read registers (defaults to GPRs; `all` shows all types)
 - `register write <name> <value>` — write a register
 - `breakpoint set <address>` / `list` / `enable <id>` / `disable <id>` / `delete <id>`
+- `memory read <address> [<n-bytes>]` — read memory (default 32 bytes, displayed in 16-byte rows)
+- `memory write <address> <bytes>` — write bytes to memory
+- `disassemble [-c <count>] [-a <address>]` — disassemble instructions (default: 5 instructions from current PC)
 - `help [command]` — show help
 
-Empty input repeats the last command.
+`continue` and `step` automatically print 5 disassembled instructions at the stop point. Empty input repeats the last command.
 
 ## Dependencies
 
 - **libedit** - found via pkg-config, linked to the CLI tool only (provides `readline`-compatible line editing)
+- **Zydis** - x86/x86-64 disassembler library, found via `find_package(zydis CONFIG)`, linked to `libgsdb` (used by the `disassembler` class)
 - **Catch2** (v3) - test framework, found via `find_package(Catch2 CONFIG)`
 - **GTest** - also found in root CMakeLists.txt (`find_package(GTest REQUIRED)`) but not used by any test target; tests use Catch2 exclusively. This is a leftover that could be removed.
 

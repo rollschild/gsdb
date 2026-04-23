@@ -27,7 +27,7 @@ class breakpoint_site {
 
     bool at_address(virt_addr addr) const { return address_ == addr; }
     bool in_range(virt_addr low, virt_addr high) const {
-        return low < address_ and high > address_;
+        return address_ >= low and high > address_;
     }
 
    private:

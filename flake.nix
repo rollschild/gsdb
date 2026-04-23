@@ -53,6 +53,7 @@
 
             buildInputs = with pkgs; [
               libedit
+              zydis
               # stdlib for cpp
               # llvm.libcxx
               # zlib
