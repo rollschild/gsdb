@@ -241,3 +241,20 @@ entry point: file_address (VA) = 0x1080
 `process_vm_readv` & `process_vm_writev` and the `/proc/<pid>/mem` file - both support reading/writing larger chunks.
 
 _HOWEVER_, `process_vm_writev` does _NOT_ support writing to protected areas of memory, like code segments.
+
+### Debug Registers
+
+- `DR0` Breakpoint address #0
+- `DR1` Breakpoint address #1
+- `DR2` Breakpoint address #2
+- `DR3` Breakpoint address #3
+- `DR4` Obsolete alias for DR6
+- `DR5` Obsolete alias for DR7
+- `DR6` Debug status register
+- `DR7` Debug control register
+- `DR8`–`15` Reserved for processor use
+
+**Local** vs. **global** hardware breakpoints.
+On Linux, however, the local and global breakpoints actually do the same thing and work in “local” mode.
+
+We can set only four hardware breakpoints at a time, and we must write the addresses at which to break to the DR0 through DR3 registers.

@@ -78,7 +78,9 @@ class process {
     /**
      * Create a breakpoint site at a give virtual address
      */
-    breakpoint_site& create_breakpoint_site(virt_addr address);
+    breakpoint_site& create_breakpoint_site(virt_addr address,
+                                            bool hardware = false,
+                                            bool internal = false);
 
     stoppoint_collection<breakpoint_site>& breakpoint_sites() {
         return breakpoint_sites_;

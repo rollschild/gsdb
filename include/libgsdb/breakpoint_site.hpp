@@ -30,8 +30,12 @@ class breakpoint_site {
         return address_ >= low and high > address_;
     }
 
+    bool is_hardware() const { return is_hardware_; }
+    bool is_internal() const { return is_internal_; }
+
    private:
-    breakpoint_site(process& proc, virt_addr address);
+    breakpoint_site(process& proc, virt_addr address, bool is_hardware = false,
+                    bool is_internal = false);
     friend process;
 
     id_type id_;
@@ -39,6 +43,12 @@ class breakpoint_site {
     virt_addr address_;
     bool is_enabled_;
     std::byte saved_data_;
+
+    // whether we should set a breakpoint site using hardware breakpoints
+    bool is_hardware_;
+    bool is_internal_;
+    // track index of the debug register a hardware breakpoint is using
+    int hardware_register_index_ = -1;
 };
 }  // namespace gsdb
 
