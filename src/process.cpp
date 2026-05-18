@@ -30,6 +30,60 @@ void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
     channel.write(reinterpret_cast<std::byte*>(message.data()), message.size());
     exit(-1);
 }
+
+/*
+00b Instruction execution only
+01b Data writes only
+10b I/O reads and writes (generally unsupported)
+11b Data reads and writes
+*/
+std::uint64_t encode_hardware_stoppoint_mode(gsdb::stoppoint_mode mode) {
+    switch (mode) {
+        case gsdb::stoppoint_mode::write:
+            return 0b01;
+        case gsdb::stoppoint_mode::read_write:
+            return 0b11;
+        case gsdb::stoppoint_mode::execute:
+            return 0b00;
+        default:
+            gsdb::error::send("Invalid stoppoint mode!");
+    }
+}
+
+/*
+00b 1 byte
+01b 2 bytes
+10b 8 bytes
+11b 4 bytes
+*/
+std::uint64_t encode_hardware_stoppoint_size(std::size_t size) {
+    switch (size) {
+        case 1:
+            return 0b00;
+        case 2:
+            return 0b01;
+        case 4:
+            return 0b11;
+        case 8:
+            return 0b10;
+        default:
+            gsdb::error::send("Invalid stoppoint size!");
+    }
+}
+
+/*
+ * To find the first free DR register, we’ll check the two enable bits in the
+ * control register that correspond to each DR register until we find one that
+ * has no bits set
+ */
+int find_free_stoppoint_register(std::uint64_t control_register) {
+    for (auto i = 0; i < 4; ++i) {
+        if ((control_register & (0b11 << (i * 2))) == 0) {
+            return i;
+        }
+    }
+    gsdb::error::send("No remaining hardware debug registers!");
+}
 }  // namespace
 
 gsdb::process::~process() {
@@ -381,4 +435,59 @@ std::vector<std::byte> gsdb::process::read_memory_without_traps(
     }
 
     return memory;
+}
+
+int gsdb::process::set_hardware_breakpoint(
+    [[maybe_unused]] gsdb::breakpoint_site::id_type id, virt_addr address) {
+    // size for execution-only hardware breakpoints must be 1
+    return set_hardware_stoppoint(address, stoppoint_mode::execute, 1);
+}
+
+int gsdb::process::set_hardware_stoppoint(gsdb::virt_addr address,
+                                          stoppoint_mode mode,
+                                          std::size_t size) {
+    auto& regs = get_registers();
+    // read the control register (DR7) and find a free spot
+    auto control = regs.read_by_id_as<std::uint64_t>(register_id::dr7);
+
+    // returns 0, 1, 2, or 3, depending on which register is free
+    // or throw exception if there is no free space
+    // for DR0..3
+    int free_space = find_free_stoppoint_register(control);
+    // write the given address to the DR register corresponding to the free
+    // space found
+    auto id = static_cast<int>(register_id::dr0) + free_space;
+    regs.write_by_id(static_cast<register_id>(id), address.addr());
+
+    // encode the bits for mode and size
+    auto mode_flag = encode_hardware_stoppoint_mode(mode);
+    auto size_flag = encode_hardware_stoppoint_size(size);
+
+    auto enable_bit = (1 << (free_space * 2));
+    auto mode_bits = (mode_flag << (free_space * 4 + 16));
+    auto size_bits = (size_flag << (free_space * 4 + 18));
+
+    auto clear_mask =
+        (0b11 << (free_space * 2)) | (0b1111 << (free_space * 4 + 16));
+    auto masked = control & ~clear_mask;
+
+    masked |= enable_bit | mode_bits | size_bits;
+
+    regs.write_by_id(register_id::dr7, masked);
+
+    return free_space;
+}
+
+void gsdb::process::clear_hardware_stoppoint(int index) {
+    // write 0 to the DR register at the given index
+    auto id = static_cast<int>(register_id::dr0) + index;
+    get_registers().write_by_id(static_cast<register_id>(id), 0);
+
+    auto control =
+        get_registers().read_by_id_as<std::uint64_t>(register_id::dr7);
+
+    auto clear_mask = (0b11 << (index * 2)) | (0b1111 << (index * 4 + 16));
+    auto masked = control & ~clear_mask;
+
+    get_registers().write_by_id(register_id::dr7, masked);
 }

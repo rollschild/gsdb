@@ -258,3 +258,12 @@ _HOWEVER_, `process_vm_writev` does _NOT_ support writing to protected areas of 
 On Linux, however, the local and global breakpoints actually do the same thing and work in “local” mode.
 
 We can set only four hardware breakpoints at a time, and we must write the addresses at which to break to the DR0 through DR3 registers.
+
+To set a hardware stop point, we need to do the following:
+
+1. Find a free space among the DR registers for the new stop point by locating one that isn’t yet enabled.
+2. Write the desired address to the correct DR register.
+3. Encode the stop point mode and size into the form expected by the control register.
+4. Clear the enable bit, mode bits, and size bits in the control register corresponding to the chosen DR register.
+5. Mask in the new bits.
+6. Write the new contents of the control register back to the system.

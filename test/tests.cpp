@@ -459,3 +459,47 @@ TEST_CASE("Reading and writing memory works", "[memory]") {
     auto read = channel.read();
     REQUIRE(to_string_view(read) == "Hello, gsdb!");
 }
+
+TEST_CASE("Hardware breakpoint evades memory checksums", "[breakpoint]") {
+    bool close_on_exec = false;
+    gsdb::pipe channel(close_on_exec);
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/anti_debugger",
+                                true, channel.get_write());
+    channel.close_write();
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // `channel.read().data()` reads the raw 8-byte address of
+    // `an_innocent_function`, which is written by the `anti_debugger.cpp` main
+    // function
+    auto func = virt_addr(from_bytes<std::uint64_t>(channel.read().data()));
+    auto& soft = proc->create_breakpoint_site(func, false);
+    soft.enable();
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // breakpoint already set
+    REQUIRE(to_string_view(channel.read()) ==
+            "NeoVim is even better than Vim...\n");
+
+    proc->breakpoint_sites().remove_by_id(soft.id());
+    auto& hard = proc->create_breakpoint_site(func, true);
+    hard.enable();
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // hardware breakpoint triggered
+    // For hardware execute breakpoints, the CPU traps before executing the
+    // instruction at the watched address, so PC is already at func — no rewind
+    // needed
+    REQUIRE(proc->get_pc() == func);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // hardware breakpoint set, but function code _NOT_ changed
+    REQUIRE(to_string_view(channel.read()) == "Vim better than Emacs...\n");
+}

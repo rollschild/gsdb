@@ -104,6 +104,9 @@ class process {
         return from_bytes<T>(data.data());
     }
 
+    int set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address);
+    void clear_hardware_stoppoint(int index);
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -124,6 +127,9 @@ class process {
     // std::vector<std::unique_ptr<breakpoint_site>> breakpoint_sites_;
 
     stoppoint_collection<breakpoint_site> breakpoint_sites_;
+
+    int set_hardware_stoppoint(virt_addr address, stoppoint_mode mode,
+                               std::size_t size);
 };
 }  // namespace gsdb
 
