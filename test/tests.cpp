@@ -503,3 +503,55 @@ TEST_CASE("Hardware breakpoint evades memory checksums", "[breakpoint]") {
     // hardware breakpoint set, but function code _NOT_ changed
     REQUIRE(to_string_view(channel.read()) == "Vim better than Emacs...\n");
 }
+
+/* Verifies that gsdb can defeat an anti-debugging
+  checksum check by timing a software breakpoint insertion
+  correctly — using a hardware watchpoint as the synchronization
+   primitive */
+TEST_CASE("Watchpoint detects read", "[watchpoint]") {
+    bool close_on_exec = false;
+    gsdb::pipe channel(close_on_exec);
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/anti_debugger",
+                                true, channel.get_write());
+    channel.close_write();
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    // where we want to eventually set a breakpoint
+    auto func = virt_addr(from_bytes<std::uint64_t>(channel.read().data()));
+
+    // set a watchpoint on that address so the program will halt when the
+    // checksum funcion tries to read the code of the function on which we will
+    // set a breakpoint
+    auto& watch =
+        proc->create_watchpoint(func, gsdb::stoppoint_mode::read_write, 1);
+    watch.enable();
+
+    // resume the process until the watch point is hit
+    proc->resume();
+    proc->wait_on_signal();
+
+    // Step over a single instruction so we don't re-trip the same watchpoint
+    proc->step_instruction();
+    // Now insert a software breakpoint at func.
+    // The int3 byte is written after the checksum has already
+    // consumed the original byte, so the integrity check has already
+    // passed
+    auto& soft = proc->create_breakpoint_site(func, false);
+    soft.enable();
+
+    // resume the process - eventually the program calls func,
+    // hits the `int3`
+    // at this point, the software breakpoint should have been hit, so require
+    // that the process stop due to SIGTRAP
+    proc->resume();
+    auto reason = proc->wait_on_signal();
+
+    REQUIRE(reason.info == SIGTRAP);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(to_string_view(channel.read()) == "Vim better than Emacs...\n");
+}

@@ -267,3 +267,9 @@ To set a hardware stop point, we need to do the following:
 4. Clear the enable bit, mode bits, and size bits in the control register corresponding to the chosen DR register.
 5. Mask in the new bits.
 6. Write the new contents of the control register back to the system.
+
+### Watchpoints
+
+Watchpoints use the same mechanisms as hardware breakpoints but can make a process stop when reading from and writing to an address as well as when executing it.
+
+Watchpoints on x64 must be aligned to their size: 8-byte watchpoints must fall on an 8-byte boudary, 4-byte watchpoints on a 4-byte boundary, and so on.

@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <numeric>
 
+// std::puts(s) writes the null-terminated string s to stdout followed by a
+// newline
 void an_innocent_function() { std::puts("Vim better than Emacs..."); }
 
 void an_innocent_function_end() {}

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <libgsdb/stoppoint_collection.hpp>
+#include <libgsdb/watchpoint.hpp>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -82,6 +83,13 @@ class process {
                                             bool hardware = false,
                                             bool internal = false);
 
+    watchpoint& create_watchpoint(virt_addr address, stoppoint_mode mode,
+                                  std::size_t size);
+    stoppoint_collection<watchpoint>& watchpoints() { return watchpoints_; }
+    const stoppoint_collection<watchpoint>& watchpoints() const {
+        return watchpoints_;
+    }
+
     stoppoint_collection<breakpoint_site>& breakpoint_sites() {
         return breakpoint_sites_;
     }
@@ -107,6 +115,9 @@ class process {
     int set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address);
     void clear_hardware_stoppoint(int index);
 
+    int set_watchpoint(watchpoint::id_type id, virt_addr address,
+                       stoppoint_mode mode, std::size_t size);
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -127,6 +138,7 @@ class process {
     // std::vector<std::unique_ptr<breakpoint_site>> breakpoint_sites_;
 
     stoppoint_collection<breakpoint_site> breakpoint_sites_;
+    stoppoint_collection<watchpoint> watchpoints_;
 
     int set_hardware_stoppoint(virt_addr address, stoppoint_mode mode,
                                std::size_t size);

@@ -32,6 +32,7 @@
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/registers.hpp"
 #include "libgsdb/types.hpp"
+#include "libgsdb/watchpoint.hpp"
 
 namespace {
 [[maybe_unused]]
@@ -50,6 +51,7 @@ disassemble - Disassemble machine code to assembly
 memory      - Commands for operating on memory
 register    - Commands for operating on registers
 step        - Step over a single instruction
+watchpoint  - Commands for operating on watchpoints
 )";
     } else if (is_prefix(args[1], "register")) {
         std::cerr << R"(Available commands:
@@ -66,6 +68,14 @@ disable <id>
 enable <id>
 set <address>
 set <address> -h
+)";
+    } else if (is_prefix(args[1], "watchpoint")) {
+        std::cerr << R"(Available commands:
+list
+delete <id>
+disable <id>
+enable <id>
+set <address> <write|rw|execute> <size>
 )";
     } else if (is_prefix(args[1], "memory")) {
         std::cerr << R"(Available commands:
@@ -379,6 +389,107 @@ void handle_breakpoint_command(gsdb::process& process,
     }
 }
 
+void handle_watchpoint_list(
+    gsdb::process& process,
+    [[maybe_unused]] const std::vector<std::string>& args) {
+    auto stoppoint_mode_to_string = [](auto mode) {
+        switch (mode) {
+            case gsdb::stoppoint_mode::execute:
+                return "execute";
+            case gsdb::stoppoint_mode::write:
+                return "write";
+            case gsdb::stoppoint_mode::read_write:
+                return "read_write";
+            default:
+                gsdb::error::send("Invalid stoppoint mode!");
+        }
+    };
+
+    if (process.watchpoints().empty()) {
+        std::print("No watchpoints set!\n");
+    } else {
+        std::print("Current watchpoints:\n");
+        process.watchpoints().for_each([&](auto& point) {
+            std::print("{}: address = {:#x}, mode = {}, size = {}, {}\n",
+                       point.id(), point.address().addr(),
+                       stoppoint_mode_to_string(point.mode()), point.size(),
+                       point.is_enabled() ? "enabled" : "disabled");
+        });
+    }
+}
+
+// watchpoint set <address> <mode> <size>
+void handle_watchpoint_set(gsdb::process& process,
+                           const std::vector<std::string>& args) {
+    if (args.size() != 5) {
+        print_help({"help", "watchpoint"});
+        return;
+    }
+    auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
+    auto mode_text = args[3];
+    auto size = gsdb::to_integral<std::size_t>(args[4]);
+
+    if (!address or !size or
+        !(mode_text == "write" or mode_text == "rw" or
+          mode_text == "execute")) {
+        print_help({"help", "watchpoint"});
+        return;
+    }
+
+    gsdb::stoppoint_mode mode;
+    mode = mode_text == "write" ? gsdb::stoppoint_mode::write
+           : mode_text == "rw"  ? gsdb::stoppoint_mode::read_write
+                                : gsdb::stoppoint_mode::execute;
+
+    process.create_watchpoint(gsdb::virt_addr{*address}, mode, *size).enable();
+}
+
+/**
+ * Support:
+ *   watchpoint list
+ *   watchpoint set <address> <mode> <size>
+ *   watchpoint enable <id>
+ *   watchpoint disable <id>
+ *   watchpoint delete <id>
+ */
+void handle_watchpoint_command(gsdb::process& process,
+                               const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        print_help({"help", "watchpoint"});
+        return;
+    }
+
+    auto command = args[1];
+
+    if (is_prefix(command, "list")) {
+        handle_watchpoint_list(process, args);
+        return;
+    }
+
+    if (is_prefix(command, "set")) {
+        handle_watchpoint_set(process, args);
+    }
+
+    if (args.size() < 3) {
+        print_help({"help", "watchpoint"});
+        return;
+    }
+
+    auto id = gsdb::to_integral<gsdb::watchpoint::id_type>(args[2]);
+    if (!id) {
+        std::cerr << "Command expects watchpoint ID!";
+        return;
+    }
+
+    if (is_prefix(command, "enable")) {
+        process.watchpoints().get_by_id(*id).enable();
+    } else if (is_prefix(command, "disable")) {
+        process.watchpoints().get_by_id(*id).disable();
+    } else if (is_prefix(command, "delete")) {
+        process.watchpoints().remove_by_id(*id);
+    }
+}
+
 void handle_memory_read_command(gsdb::process& process,
                                 const std::vector<std::string>& args) {
     auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
@@ -496,6 +607,8 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
         handle_memory_command(*process, args);
     } else if (is_prefix(command, "disassemble")) {
         handle_disassemble_command(*process, args);
+    } else if (is_prefix(command, "watchpoint")) {
+        handle_watchpoint_command(*process, args);
     } else {
         std::cerr << "Unknown command!\n";
     }

@@ -23,6 +23,7 @@
 #include "libgsdb/pipe.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/types.hpp"
+#include "libgsdb/watchpoint.hpp"
 
 namespace {
 void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
@@ -490,4 +491,21 @@ void gsdb::process::clear_hardware_stoppoint(int index) {
     auto masked = control & ~clear_mask;
 
     get_registers().write_by_id(register_id::dr7, masked);
+}
+
+int gsdb::process::set_watchpoint([[maybe_unused]] gsdb::watchpoint::id_type id,
+                                  virt_addr address, stoppoint_mode mode,
+                                  std::size_t size) {
+    return set_hardware_stoppoint(address, mode, size);
+}
+
+gsdb::watchpoint& gsdb::process::create_watchpoint(virt_addr address,
+                                                   stoppoint_mode mode,
+                                                   std::size_t size) {
+    if (watchpoints_.contains_address(address)) {
+        error::send("Watchpoint already created at address " +
+                    std::to_string(address.addr()));
+    }
+    return watchpoints_.push(std::unique_ptr<watchpoint>(
+        new watchpoint(*this, address, mode, size)));
 }
