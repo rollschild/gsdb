@@ -11,6 +11,7 @@
 #include <libgsdb/watchpoint.hpp>
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "libgsdb/bit.hpp"
@@ -23,11 +24,19 @@ namespace gsdb {
 
 enum class process_state { stopped, running, exited, terminated };
 
+enum class trap_type {
+    single_step,
+    software_break,
+    hardware_break,
+    unknown,
+};
+
 struct stop_reason {
     stop_reason(int wait_status);
 
     process_state reason;
     std::uint8_t info;  // coming from `waitpid()`
+    std::optional<trap_type> trap_reason;
 };
 
 class process {
@@ -118,6 +127,9 @@ class process {
     int set_watchpoint(watchpoint::id_type id, virt_addr address,
                        stoppoint_mode mode, std::size_t size);
 
+    std::variant<breakpoint_site::id_type, watchpoint::id_type>
+    get_current_hardware_stoppoint() const;
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -142,6 +154,8 @@ class process {
 
     int set_hardware_stoppoint(virt_addr address, stoppoint_mode mode,
                                std::size_t size);
+
+    void augment_stop_reason(stop_reason& reason);
 };
 }  // namespace gsdb
 

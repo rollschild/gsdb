@@ -10,6 +10,15 @@ To test registers:
 ./build/tools/gsdb ./build/test/targets/reg_read
 ```
 
+To test watchpoints:
+
+```console
+./build/tools/gsdb ./build/test/targets/anti_debugger
+# then, inside gsdb>
+# find the address by using objdump -d ./build/test/targets/anti_debugger| grep an_innocent_function
+gsdb> watch set 0x555555555169 rw 1
+```
+
 ## Project Structure
 
 ### The linking flow in summary
@@ -326,3 +335,12 @@ Session
 In an interactive shell with job control enabled (the default
 for bash/zsh at a terminal), every `&` background job gets put
 into its own new process group via `setpgid()`.
+
+Potential values of `si_code` on a `SIGTRAP`:
+
+- `SI_KERNEL` Generic trap sent from the kernel
+- `TRAP_BRKPT` Software breakpoint
+- `TRAP_HWBKPT` Hardware breakpoint
+- `TRAP_TRACE` Single step
+
+GCC and Clang provide a handy function for finding the position of the least significant set bit: `__builtin_ctz`, short for “count trailing zeros.”

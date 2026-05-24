@@ -157,6 +157,41 @@ std::vector<std::string> split(std::string_view str, char delimiter) {
     return out;
 }
 
+std::string get_sigtrap_info(const gsdb::process& process,
+                             gsdb::stop_reason reason) {
+    if (reason.trap_reason == gsdb::trap_type::software_break) {
+        auto& site =
+            process.breakpoint_sites().get_by_address(process.get_pc());
+        return std::format(" (breakpoint {})", site.id());
+    }
+
+    if (reason.trap_reason == gsdb::trap_type::hardware_break) {
+        auto id = process.get_current_hardware_stoppoint();
+        if (id.index() == 0) {
+            // hardware stoppoint, not watchpoint
+            return std::format(" (breakpoint {})", std::get<0>(id));
+        }
+
+        std::string message;
+        auto& point = process.watchpoints().get_by_id(std::get<1>(id));
+        message += std::format(" (watchpoint {})", point.id());
+
+        if (point.data() == point.previous_data()) {
+            message += std::format("\nValue: {:#x}", point.data());
+        } else {
+            message += std::format("\nOld value: {:#x}\nNew value: {:#x}",
+                                   point.previous_data(), point.data());
+        }
+        return message;
+    }
+
+    if (reason.trap_reason == gsdb::trap_type::single_step) {
+        return " (single step)";
+    }
+
+    return "";
+}
+
 void print_stop_reason(const gsdb::process& process, gsdb::stop_reason reason) {
     // std::cout << "Process " << process.pid() << ' ';
     std::string message;
@@ -174,6 +209,9 @@ void print_stop_reason(const gsdb::process& process, gsdb::stop_reason reason) {
             message =
                 std::format("stopped with signal {} at {:#x}",
                             sigabbrev_np(reason.info), process.get_pc().addr());
+            if (reason.info == SIGTRAP) {
+                message += get_sigtrap_info(process, reason);
+            }
             break;
         default:
             message = "still running!";
@@ -479,6 +517,7 @@ void handle_watchpoint_command(gsdb::process& process,
 
     if (is_prefix(command, "set")) {
         handle_watchpoint_set(process, args);
+        return;
     }
 
     if (args.size() < 3) {
@@ -488,7 +527,7 @@ void handle_watchpoint_command(gsdb::process& process,
 
     auto id = gsdb::to_integral<gsdb::watchpoint::id_type>(args[2]);
     if (!id) {
-        std::cerr << "Command expects watchpoint ID!";
+        std::cerr << "Command expects watchpoint ID!\n";
         return;
     }
 

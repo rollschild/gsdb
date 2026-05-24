@@ -31,6 +31,12 @@ class watchpoint {
         return address_ >= low and high > address_;
     }
 
+    std::uint64_t data() const { return data_; }
+    std::uint64_t previous_data() const { return previous_data_; }
+
+    // Re-read the value at the watched memory location
+    void update_data();
+
    private:
     friend process;
 
@@ -44,6 +50,10 @@ class watchpoint {
     stoppoint_mode mode_;
     std::size_t size_;
     int hardware_register_index_ = -1;
+
+    // track values to which the watchpoint point
+    std::uint64_t data_ = 0;           // curr value at the watched address
+    std::uint64_t previous_data_ = 0;  // previously read value
 };
 
 }  // namespace gsdb

@@ -16,6 +16,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "libgsdb/bit.hpp"
@@ -163,14 +165,27 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
     // it is stopped
     if (is_attached_ and state_ == process_state::stopped) {
         read_all_registers();
+        augment_stop_reason(reason);
 
         // If process stopped due to `SIGTRAP` and the address 1 byte below the
         // program counter is an enabled breakpoint, we should fix up the
         // program counter to point to the breakpoint
         auto instr_begin = get_pc() - 1;
-        if (reason.info == SIGTRAP and
-            breakpoint_sites_.enabled_stoppoint_at_address(instr_begin)) {
-            set_pc(instr_begin);
+        if (reason.info == SIGTRAP) {
+            if (reason.trap_reason == trap_type::software_break and
+                breakpoint_sites_.enabled_stoppoint_at_address(instr_begin) and
+                breakpoint_sites_.get_by_address(instr_begin).is_enabled()) {
+                // if caused by software breakpoint, walk the program counter
+                // back 1 byte to the start of the `int3` instruction
+                set_pc(instr_begin);
+            } else if (reason.trap_reason == trap_type::hardware_break) {
+                // if caused by hardware stoppoint
+                auto id = get_current_hardware_stoppoint();
+                // id is a variant -> check if it's watchpoint
+                if (id.index() == 1) {
+                    watchpoints_.get_by_id(std::get<1>(id)).update_data();
+                }
+            }
         }
     }
 
@@ -514,4 +529,53 @@ gsdb::watchpoint& gsdb::process::create_watchpoint(virt_addr address,
     }
     return watchpoints_.push(std::unique_ptr<watchpoint>(
         new watchpoint(*this, address, mode, size)));
+}
+
+void gsdb::process::augment_stop_reason(gsdb::stop_reason& reason) {
+    siginfo_t info;
+    if (ptrace(PTRACE_GETSIGINFO, pid_, nullptr, &info) < 0) {
+        error::send_errno("Failed to get signal info!");
+    }
+
+    reason.trap_reason = trap_type::unknown;
+    if (reason.info == SIGTRAP) {
+        switch (info.si_code) {
+            case TRAP_TRACE:
+                reason.trap_reason = trap_type::single_step;
+                break;
+            // x64 uses SI_KERNEL, not TRAP_BRKPT, for software breakpoints
+            case SI_KERNEL:
+                reason.trap_reason = trap_type::software_break;
+                break;
+            case TRAP_HWBKPT:
+                reason.trap_reason = trap_type::hardware_break;
+                break;
+        }
+    }
+}
+
+std::variant<gsdb::breakpoint_site::id_type, gsdb::watchpoint::id_type>
+gsdb::process::get_current_hardware_stoppoint() const {
+    auto& regs = get_registers();
+    auto status = regs.read_by_id_as<std::uint64_t>(gsdb::register_id::dr6);
+    // find which bit of the least significant 4 bits is set by couting trailing
+    // zeros
+    // (unsigned long long) flavor of the `__builtin_ctz` function
+    auto index = __builtin_ctzll(status);
+
+    auto id = static_cast<int>(gsdb::register_id::dr0) + index;
+    auto addr = gsdb::virt_addr(
+        regs.read_by_id_as<std::uint64_t>(static_cast<gsdb::register_id>(id)));
+
+    using ret =
+        std::variant<gsdb::breakpoint_site::id_type, gsdb::watchpoint::id_type>;
+    if (breakpoint_sites_.contains_address(addr)) {
+        auto site_id = breakpoint_sites_.get_by_address(addr).id();
+        // setting the type at index 0 of the std::variant, which is
+        // sdb::breakpoint _site::id_type
+        return ret{std::in_place_index<0>, site_id};
+    } else {
+        auto watch_id = watchpoints_.get_by_address(addr).id();
+        return ret{std::in_place_index<1>, watch_id};
+    }
 }
