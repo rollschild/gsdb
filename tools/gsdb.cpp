@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <concepts>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +36,16 @@
 #include "libgsdb/watchpoint.hpp"
 
 namespace {
+
+// this exists precisely because you have no way to pass custom data to a signal
+// handler
+gsdb::process* g_gsdb_process = nullptr;
+
+void handle_sigint(int) {
+    // `kill` is async-signal-safe
+    kill(g_gsdb_process->pid(), SIGSTOP);
+}
+
 [[maybe_unused]]
 bool is_prefix(std::string_view str, std::string_view of) {
     if (str.size() > of.size()) return false;
@@ -653,6 +664,8 @@ int main(int argc, const char** argv) {
 
     try {
         auto process = attach(argc, argv);
+        g_gsdb_process = process.get();
+        signal(SIGINT, handle_sigint);
         main_loop(process);
     } catch (const gsdb::error& err) {
         std::cout << err.what() << '\n';

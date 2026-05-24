@@ -195,6 +195,12 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(
     // be debugged
     if (pid == 0) {
         // child process
+
+        // set PGID of child to be same as its PID
+        // instead of using parant's PID as PGID
+        if (setpgid(0, 0) < 0) {
+            exit_with_perror(channel, "Could not set pgid!");
+        }
         personality(ADDR_NO_RANDOMIZE);  // NO ASLR
         channel.close_read();
 

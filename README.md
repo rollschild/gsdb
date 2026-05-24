@@ -273,3 +273,56 @@ To set a hardware stop point, we need to do the following:
 Watchpoints use the same mechanisms as hardware breakpoints but can make a process stop when reading from and writing to an address as well as when executing it.
 
 Watchpoints on x64 must be aligned to their size: 8-byte watchpoints must fall on an 8-byte boudary, 4-byte watchpoints on a 4-byte boundary, and so on.
+
+### Signal Handlers
+
+Pressing ctrl-C sends a `SIGINT` signal to the currently executing process.
+Ideally, the `gsdb` process should send a `SIGSTOP` to the inferior, then continue reading input from the user.
+
+POSIX defines a list of functions deemed **async-signal-safe**, meaning you can safely call them from inside a signal handler. Use `man signal-safety` to find out.
+
+Use `signal` to install signal handlers.
+Handler functions:
+
+`SIG_IGN`
+: ignore the signal
+
+`SIG_DFL`
+: invokes default handler
+
+`void (*sighandler_t)(int)`
+: pointer to user-supplied handler
+
+When you press ctrl-C, you don’t merely send a `SIGINT` to the running process; you send it to all processes in the same process group.
+
+_Forked processes run in the same process group as their parent_, so when gsdb gets a `SIGINT`, the inferior gets a `SIGINT`.
+
+A process group is a Linux/POSIX abstraction that bundles one
+or more related processes together so the kernel can deliver
+signals and job-control operations to all of them at once.
+
+Core concepts
+
+- Every process has a PID (its own ID) and a PGID (the ID of
+  the group it belongs to).
+- The PGID is just the PID of the process group leader — the
+  process that created the group.
+- A `fork()`ed child inherits its parent's PGID by default.
+- Process groups live inside a larger container called a
+  session (which is what `setsid()` creates and is what `/dev/tty`
+  and controlling-terminal logic operate on).
+
+```
+Session
+├── Process group A (PGID = 100)
+│ ├── pid 100 ← leader
+│ ├── pid 101
+│ └── pid 102
+└── Process group B (PGID = 200)
+├── pid 200 ← leader
+└── pid 201
+```
+
+In an interactive shell with job control enabled (the default
+for bash/zsh at a terminal), every `&` background job gets put
+into its own new process group via `setpgid()`.
