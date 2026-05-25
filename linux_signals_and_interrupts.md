@@ -137,7 +137,7 @@ sequenceDiagram
     Gen->>Exit: irq_exit_rcu()
     Exit-->>Def: maybe run pending softirqs
     Exit->>Entry: irqentry_exit(regs, state)
-    Entry->>CPU: restore registers; interrupt return
+    Entry->>CPU: restore registers and execute interrupt return
     CPU->>Prev: resume previous context or enter scheduler/return-to-user work
 ```
 
@@ -424,7 +424,7 @@ sequenceDiagram
     U->>CPU: syscall instruction
     CPU->>Sys: enter kernel
     Sys->>Wait: syscall blocks
-    Note over Wait: Task sleeps; scheduler runs something else
+    Note over Wait: Task sleeps while scheduler runs something else
     Sig-->>Wait: Signal becomes pending and wakes task
     Wait->>Sys: syscall interrupted or restartable
     Sys->>Sig: return-to-user work checks signal
@@ -462,7 +462,7 @@ sequenceDiagram
     IRQ->>TTY: keyboard input processed
     TTY->>Sig: generate SIGINT for foreground process group
     Sig->>Sig: mark signal pending for target process/thread(s)
-    IRQ->>Exit: finish interrupt; later return/schedule target task
+    IRQ->>Exit: finish interrupt and later return or schedule target task
     Exit->>Sig: check pending unblocked signal
     Sig->>App: if caught, arrange user handler frame
     App->>H: handler runs in user mode
@@ -492,14 +492,14 @@ sequenceDiagram
     PF->>VM: inspect VMA/page tables/access type
     alt valid recoverable fault
         VM->>VM: allocate/map page or resolve COW
-        VM->>App: return; retry instruction
+        VM->>App: return and retry instruction
     else invalid access
         VM->>Sig: generate thread-directed SIGSEGV
         Sig->>Exit: pending signal for current thread
-        Exit->>H: build frame; return to handler in user mode
+        Exit->>H: build frame and return to handler in user mode
         H->>Tr: handler returns
         Tr->>Ret: rt_sigreturn syscall
-        Ret->>App: restore context; resume or continue as handler arranged
+        Ret->>App: restore context and resume or continue as handler arranged
     end
 ```
 
