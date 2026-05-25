@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <concepts>
 #include <csignal>
 #include <cstddef>
@@ -32,6 +33,7 @@
 #include "libgsdb/process.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/registers.hpp"
+#include "libgsdb/syscalls.hpp"
 #include "libgsdb/types.hpp"
 #include "libgsdb/watchpoint.hpp"
 
@@ -63,6 +65,7 @@ memory      - Commands for operating on memory
 register    - Commands for operating on registers
 step        - Step over a single instruction
 watchpoint  - Commands for operating on watchpoints
+catchpoint  - Commands for operating on catchpoints
 )";
     } else if (is_prefix(args[1], "register")) {
         std::cerr << R"(Available commands:
@@ -87,6 +90,12 @@ delete <id>
 disable <id>
 enable <id>
 set <address> <write|rw|execute> <size>
+)";
+    } else if (is_prefix(args[1], "catchpoint")) {
+        std::cerr << R"(Available commands:
+syscall
+syscall none
+syscall <list-of-comma-separated-syscalls> 
 )";
     } else if (is_prefix(args[1], "memory")) {
         std::cerr << R"(Available commands:
@@ -157,6 +166,51 @@ std::vector<std::string> split(std::string_view str, char delimiter) {
     return out;
 }
 
+template <std::input_iterator It, std::sentinel_for<It> S>
+std::string format_join(It first, S last, std::string_view separator,
+                        std::string_view byte_fmt = "{:#04x}") {
+    std::string res;
+    std::string_view sep = "";
+    for (; first != last; ++first) {
+        res += sep;
+        if constexpr (std::same_as<std::iter_value_t<It>, std::byte>) {
+            auto val = std::to_integer<std::uint8_t>(*first);
+            /*
+            std::format_to(std::back_inserter(res), "{}{:#04x}", sep,
+                           std::to_integer<std::uint8_t>(*first));
+            */
+            std::vformat_to(std::back_inserter(res), byte_fmt,
+                            std::make_format_args(val));
+
+        } else {
+            const auto& val = *first;
+            std::vformat_to(std::back_inserter(res), byte_fmt,
+                            std::make_format_args(val));
+        }
+        sep = separator;
+    }
+    return res;
+}
+
+template <std::ranges::range T>
+// requires std::formattable<std::ranges::range_value_t<T>, char>
+std::string format_join(const T& t, std::string_view separator) {
+    return format_join(std::ranges::begin(t), std::ranges::end(t), separator);
+    /* std::string res;
+    std::string_view sep = "";
+    for (const auto& elem : t) {
+        if constexpr (std::same_as<std::ranges::range_value_t<T>, std::byte>) {
+            std::format_to(std::back_inserter(res), "{}{:#04x}", sep,
+                           std::to_integer<std::uint8_t>(elem));
+
+        } else {
+            std::format_to(std::back_inserter(res), "{}{}", sep, elem);
+        }
+        sep = separator;
+    }
+    return res; */
+}
+
 std::string get_sigtrap_info(const gsdb::process& process,
                              gsdb::stop_reason reason) {
     if (reason.trap_reason == gsdb::trap_type::software_break) {
@@ -189,6 +243,22 @@ std::string get_sigtrap_info(const gsdb::process& process,
         return " (single step)";
     }
 
+    if (reason.trap_reason == gsdb::trap_type::syscall) {
+        const auto& info = *(reason.syscall_info);
+        std::string message = " ";
+        if (info.entry) {
+            message += "(syscall entry)\n";
+            message += std::format(
+                "syscall: {}({})", gsdb::syscall_id_to_name(info.id),
+                format_join(std::begin(info.args), std::end(info.args), ",",
+                            "{:#x}"));
+        } else {
+            message += "(syscall exit)\n";
+            message += std::format("syscall returned: {:#x}", info.ret);
+        }
+        return message;
+    }
+
     return "";
 }
 
@@ -219,49 +289,6 @@ void print_stop_reason(const gsdb::process& process, gsdb::stop_reason reason) {
     }
 
     std::print("Process {} {}\n", process.pid(), message);
-}
-
-template <std::input_iterator It, std::sentinel_for<It> S>
-std::string format_join(It first, S last, std::string_view separator,
-                        std::string_view byte_fmt = "{:#04x}") {
-    std::string res;
-    std::string_view sep = "";
-    for (; first != last; ++first) {
-        res += sep;
-        if constexpr (std::same_as<std::iter_value_t<It>, std::byte>) {
-            auto val = std::to_integer<std::uint8_t>(*first);
-            /*
-            std::format_to(std::back_inserter(res), "{}{:#04x}", sep,
-                           std::to_integer<std::uint8_t>(*first));
-            */
-            std::vformat_to(std::back_inserter(res), byte_fmt,
-                            std::make_format_args(val));
-
-        } else {
-            std::format_to(std::back_inserter(res), "{}", *first);
-        }
-        sep = separator;
-    }
-    return res;
-}
-
-template <std::ranges::range T>
-// requires std::formattable<std::ranges::range_value_t<T>, char>
-std::string format_join(const T& t, std::string_view separator) {
-    return format_join(std::ranges::begin(t), std::ranges::end(t), separator);
-    /* std::string res;
-    std::string_view sep = "";
-    for (const auto& elem : t) {
-        if constexpr (std::same_as<std::ranges::range_value_t<T>, std::byte>) {
-            std::format_to(std::back_inserter(res), "{}{:#04x}", sep,
-                           std::to_integer<std::uint8_t>(elem));
-
-        } else {
-            std::format_to(std::back_inserter(res), "{}{}", sep, elem);
-        }
-        sep = separator;
-    }
-    return res; */
 }
 
 void handle_register_read(gsdb::process& process,
@@ -634,6 +661,45 @@ void handle_disassemble_command(gsdb::process& process,
     print_disassembly(process, address, n_instructions);
 }
 
+/**
+ * Support:
+ *   `catchpoint syscall`
+ *   `catchpoint syscall none`
+ *   `catchpoint syscall <list-of-comma-separated-syscalls>`
+ */
+void handle_syscall_catchpoint_command(gsdb::process& process,
+                                       const std::vector<std::string>& args) {
+    gsdb::syscall_catch_policy policy = gsdb::syscall_catch_policy::catch_all();
+    if (args.size() == 3 and args[2] == "none") {
+        policy = gsdb::syscall_catch_policy::catch_none();
+    } else if (args.size() >= 3) {
+        auto syscalls = split(args[2], ',');
+        std::vector<int> to_catch;
+        std::transform(std::begin(syscalls), std::end(syscalls),
+                       std::back_inserter(to_catch), [](auto& syscall) {
+                           return isdigit(syscall[0])
+                                      ? gsdb::to_integral<int>(syscall).value()
+                                      : gsdb::syscall_name_to_id(syscall);
+                       });
+        policy = gsdb::syscall_catch_policy::catch_some(std::move(to_catch));
+    }
+
+    process.set_syscall_catch_policy(std::move(policy));
+}
+
+void handle_catchpoint_command(gsdb::process& process,
+                               const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        print_help({"help", "catchpoint"});
+        return;
+    }
+
+    if (is_prefix(args[1], "syscall")) {
+        handle_syscall_catchpoint_command(process, args);
+        return;
+    }
+}
+
 void handle_command(std::unique_ptr<gsdb::process>& process,
                     std::string_view line) {
     auto args = split(line, ' ');
@@ -659,6 +725,8 @@ void handle_command(std::unique_ptr<gsdb::process>& process,
         handle_disassemble_command(*process, args);
     } else if (is_prefix(command, "watchpoint")) {
         handle_watchpoint_command(*process, args);
+    } else if (is_prefix(command, "catchpoint")) {
+        handle_catchpoint_command(*process, args);
     } else {
         std::cerr << "Unknown command!\n";
     }

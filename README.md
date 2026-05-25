@@ -344,3 +344,36 @@ Potential values of `si_code` on a `SIGTRAP`:
 - `TRAP_TRACE` Single step
 
 GCC and Clang provide a handy function for finding the position of the least significant set bit: `__builtin_ctz`, short for “count trailing zeros.”
+
+### Catchpoints
+
+A **catchpoint** stops the process when a specific event occurs.
+
+To actually receive traps from syscalls, we use the `PTRACE_SYSCALL` request instead of `PTRACE_CONT` when resuming the process.
+
+If we request a `PTRACE_SYSCALL`, the inferior will halt twice for each syscall: once on entry and once on exit.
+
+OS provides a header file `asm/unistd_64.h` that contains syscall macros. Use command
+
+```
+$ sed -n -r 's/^#define __NR_(.+) (.+)/DEFINE_SYSCALL(\1,\2)/p' \
+/usr/include/x86_64-linux-gnu/asm/unistd_64.h
+```
+
+to convert:
+
+```
+#define __NR_read 0
+#define __NR_write 1
+#define __NR_open 2
+#define __NR_close 3
+```
+
+into:
+
+```cpp
+DEFINE_SYSCALL(read,0)
+DEFINE_SYSCALL(write,1)
+DEFINE_SYSCALL(open,2)
+DEFINE_SYSCALL(close,3)
+```

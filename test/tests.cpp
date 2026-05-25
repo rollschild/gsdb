@@ -1,5 +1,7 @@
 #include <elf.h>
+#include <fcntl.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <cerrno>
@@ -17,6 +19,7 @@
 #include "libgsdb/error.hpp"
 #include "libgsdb/pipe.hpp"
 #include "libgsdb/register_info.hpp"
+#include "libgsdb/syscalls.hpp"
 #include "libgsdb/types.hpp"
 
 using namespace gsdb;
@@ -554,4 +557,41 @@ TEST_CASE("Watchpoint detects read", "[watchpoint]") {
     proc->wait_on_signal();
 
     REQUIRE(to_string_view(channel.read()) == "Vim better than Emacs...\n");
+}
+
+TEST_CASE("Syscall mapping works", "[syscall]") {
+    REQUIRE(gsdb::syscall_id_to_name(0) == "read");
+    REQUIRE(gsdb::syscall_name_to_id("read") == 0);
+    REQUIRE(gsdb::syscall_id_to_name(62) == "kill");
+    REQUIRE(gsdb::syscall_name_to_id("kill") == 62);
+}
+
+TEST_CASE("Syscall catchpoints work", "[catchpoint]") {
+    auto dev_null = open("/dev/null", O_WRONLY);
+    auto proc = process::launch(std::string(TARGETS_DIR) + "/anti_debugger",
+                                true, dev_null);
+
+    auto write_syscall = gsdb::syscall_name_to_id("write");
+    auto policy = gsdb::syscall_catch_policy::catch_some({write_syscall});
+    proc->set_syscall_catch_policy(policy);
+
+    proc->resume();
+    auto reason = proc->wait_on_signal();
+
+    REQUIRE(reason.reason == gsdb::process_state::stopped);
+    REQUIRE(reason.info == SIGTRAP);
+    REQUIRE(reason.trap_reason == gsdb::trap_type::syscall);
+    REQUIRE(reason.syscall_info->id == write_syscall);
+    REQUIRE(reason.syscall_info->entry == true);
+
+    proc->resume();
+    reason = proc->wait_on_signal();
+
+    REQUIRE(reason.reason == gsdb::process_state::stopped);
+    REQUIRE(reason.info == SIGTRAP);
+    REQUIRE(reason.trap_reason == gsdb::trap_type::syscall);
+    REQUIRE(reason.syscall_info->id == write_syscall);
+    REQUIRE(reason.syscall_info->entry == false);
+
+    close(dev_null);
 }

@@ -1,6 +1,13 @@
 # Use namespaced library targets. Creates _static_ library target.
-add_library(libgsdb process.cpp pipe.cpp registers.cpp breakpoint_site.cpp
-                    disassembler.cpp watchpoint.cpp)
+add_library(
+  libgsdb
+  process.cpp
+  pipe.cpp
+  registers.cpp
+  breakpoint_site.cpp
+  disassembler.cpp
+  watchpoint.cpp
+  syscalls.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
 #
 # Creates a namespaced alias for the libgsdb target.

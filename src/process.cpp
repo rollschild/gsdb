@@ -6,11 +6,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <libgsdb/error.hpp>
 #include <libgsdb/process.hpp>
 #include <memory>
@@ -32,6 +35,17 @@ void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
     auto message = prefix + ": " + std::strerror(errno);
     channel.write(reinterpret_cast<std::byte*>(message.data()), message.size());
     exit(-1);
+}
+
+/**
+ * Signal number will have its 8th bit set if the SIGTRAP came from a syscall.
+ * We can use `signal == (SIGTRAP | 0x80)` to check whether we're trapped by a
+ * syscall.
+ */
+void set_ptrace_options(pid_t pid) {
+    if (ptrace(PTRACE_SETOPTIONS, pid, nullptr, PTRACE_O_TRACESYSGOOD) < 0) {
+        gsdb::error::send_errno("Failed to set TRACESYSGOOD option!");
+    }
 }
 
 /*
@@ -133,7 +147,12 @@ void gsdb::process::resume() {
         // process and setting the state to running
         bp.enable();
     }
-    if (ptrace(PTRACE_CONT, pid_, nullptr, nullptr) < 0) {
+    auto request =
+        syscall_catch_policy_.get_mode() == syscall_catch_policy::mode::none
+            ? PTRACE_CONT
+            : PTRACE_SYSCALL;  // Now the inferior will trap whenever a syscall
+                               // is entered or exited
+    if (ptrace(request, pid_, nullptr, nullptr) < 0) {
         error::send_errno("Could NOT resume");
     }
     state_ = process_state::running;
@@ -185,6 +204,8 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
                 if (id.index() == 1) {
                     watchpoints_.get_by_id(std::get<1>(id)).update_data();
                 }
+            } else if (reason.trap_reason == trap_type::syscall) {
+                reason = maybe_resume_from_syscall(reason);
             }
         }
     }
@@ -261,7 +282,11 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(
     // forking, because the process won't stop automatically after the `exec`
     // call
     if (debug) {
-        proc->wait_on_signal();  // wait for the process to halt
+        // wait for the process to halt
+        proc->wait_on_signal();
+        // extend the signal information that `ptrace` provides, so it becomes
+        // much easier to distinguish `SIGTRAP` signals that come from syscalls
+        set_ptrace_options(proc->pid());
     }
 
     return proc;
@@ -281,6 +306,7 @@ std::unique_ptr<gsdb::process> gsdb::process::attach(pid_t pid) {
         new process(pid, /*terminate_on_end=*/false, /*is_attached=*/true));
     proc->wait_on_signal();  // blocking, wait for the underlying process to
                              // halt
+    set_ptrace_options(proc->pid());
 
     return proc;
 }
@@ -537,6 +563,45 @@ void gsdb::process::augment_stop_reason(gsdb::stop_reason& reason) {
         error::send_errno("Failed to get signal info!");
     }
 
+    if (reason.info == (SIGTRAP | 0x80)) {
+        // Default constructs a new syscall_information _in-place_
+        // inside the optional's internal storage.
+        // Mark the optional as engaged (has_value() == true).
+        // Returns a non-const ref (T&) to the newly-built object that now lives
+        // inside the optional
+        auto& sys_info = reason.syscall_info.emplace();
+        auto& regs = get_registers();
+
+        if (expecting_syscall_exit_) {
+            sys_info.entry = false;
+            sys_info.id =
+                regs.read_by_id_as<std::uint64_t>(register_id::orig_rax);
+            sys_info.ret = regs.read_by_id_as<std::uint64_t>(register_id::rax);
+            expecting_syscall_exit_ = false;
+        } else {
+            sys_info.entry = true;
+            sys_info.id =
+                regs.read_by_id_as<std::uint64_t>(register_id::orig_rax);
+            std::array<register_id, 6> arg_regs = {
+                register_id::rdi, register_id::rsi, register_id::rdx,
+                register_id::r10, register_id::r8,  register_id::r9,
+            };
+
+            for (auto i = 0; i < 6; ++i) {
+                sys_info.args[i] =
+                    regs.read_by_id_as<std::uint64_t>(arg_regs[i]);
+            }
+
+            expecting_syscall_exit_ = true;
+        }
+
+        reason.info = SIGTRAP;
+        reason.trap_reason = trap_type::syscall;
+        return;
+    }
+
+    expecting_syscall_exit_ = false;
+
     reason.trap_reason = trap_type::unknown;
     if (reason.info == SIGTRAP) {
         switch (info.si_code) {
@@ -578,4 +643,22 @@ gsdb::process::get_current_hardware_stoppoint() const {
         auto watch_id = watchpoints_.get_by_address(addr).id();
         return ret{std::in_place_index<1>, watch_id};
     }
+}
+
+/**
+ * Resume if the current syscall is the one we are catching
+ */
+gsdb::stop_reason gsdb::process::maybe_resume_from_syscall(
+    const stop_reason& reason) {
+    if (syscall_catch_policy_.get_mode() == syscall_catch_policy::mode::some) {
+        auto& to_catch = syscall_catch_policy_.get_to_catch();
+        auto found = std::find(std::begin(to_catch), std::end(to_catch),
+                               reason.syscall_info->id);
+        if (found == std::end(to_catch)) {
+            resume();
+            return wait_on_signal();
+        }
+    }
+
+    return reason;
 }
