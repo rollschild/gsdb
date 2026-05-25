@@ -377,3 +377,7 @@ DEFINE_SYSCALL(write,1)
 DEFINE_SYSCALL(open,2)
 DEFINE_SYSCALL(close,3)
 ```
+
+### Signal and Interrupt Interals
+
+Linux kernel defines `ptrace` as a syscall at `linux/kernel/ptrace.c`.
