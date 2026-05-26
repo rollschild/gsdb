@@ -7,7 +7,8 @@ add_library(
   breakpoint_site.cpp
   disassembler.cpp
   watchpoint.cpp
-  syscalls.cpp)
+  syscalls.cpp
+  elf.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
 #
 # Creates a namespaced alias for the libgsdb target.

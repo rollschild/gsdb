@@ -381,3 +381,32 @@ DEFINE_SYSCALL(close,3)
 ### Signal and Interrupt Interals
 
 Linux kernel defines `ptrace` as a syscall at `linux/kernel/ptrace.c`.
+
+### ELF
+
+ELF files can be executable programs, shared libraries, static libraries (called **relocatable files** in the specifications), and core dumps (snapshots of memory and registers taken to debug a process that has crashed).
+
+#### Sections and Segments
+
+ELF communicates **link-time** information in **sections**, named regions of the binary accompanied by relevant flags and attributes.
+
+ELF files communicate **execution-time** information in **segments**.
+
+Results of `readelf --sections --segments test/targets/anti_debugger` contains:
+
+- **section header**: sections
+- **program header**: segments
+- mapping between sections and segments
+
+![ELF architecture](elf-arch.jpg)
+_Figure 1: ELF binary layout._
+
+**String tables** hold textual data.
+
+**Symbol tables** describe entities like functions and variables.
+
+`elf.h` header in Linux. The header file also defines the `Elf64_Ehdr` type for 64-bit ELF headers.
+
+ELF files can be megabytes or even gigabytes in size.
+
+One convenient way to handle large files is to use the `mmap` syscall to map them into the virtual memory of our process, letting us pretend we’ve read the file completely into memory.
