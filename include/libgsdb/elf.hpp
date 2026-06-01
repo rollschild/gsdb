@@ -5,6 +5,14 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <map>
+#include <optional>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "libgsdb/types.hpp"
 
 namespace gsdb {
 class elf {
@@ -19,13 +27,96 @@ class elf {
     std::filesystem::path path() const { return path_; }
     const Elf64_Ehdr& get_header() const { return header_; }
 
+    std::string_view get_section_name(std::size_t index) const;
+
+    /**
+     * Returns a pointer to the section header for the section with given name
+     */
+    std::optional<const Elf64_Shdr*> get_section(std::string_view name) const;
+    /**
+     * Returns a span of bytes with the data for that section
+     */
+    span<const std::byte> get_section_contents(std::string_view name) const;
+
+    /**
+     * Retrieve a string from the string table given an index
+     */
+    std::string_view get_string(std::size_t index) const;
+
+    virt_addr load_bias() const { return load_bias_; }
+    void notify_loaded(virt_addr address) { load_bias_ = address; }
+
+    /**
+     * Retrieve the section to which a given file address belongs
+     */
+    const Elf64_Shdr* get_section_containing_address(file_addr addr) const;
+    /**
+     * Retrieve the section to which a given virtual address belongs
+     */
+    const Elf64_Shdr* get_section_containing_address(virt_addr addr) const;
+
+    std::optional<file_addr> get_section_start_address(
+        std::string_view name) const;
+
+    /**
+     * Look up the given name in the symbol name map and return pointers to all
+     * symbols that match the name
+     */
+    std::vector<const Elf64_Sym*> get_symbols_by_name(
+        std::string_view name) const;
+
+    // starts at the address
+    std::optional<const Elf64_Sym*> get_symbol_at_address(file_addr addr) const;
+    std::optional<const Elf64_Sym*> get_symbol_at_address(virt_addr addr) const;
+
+    // symbols that contains a give file address
+    std::optional<const Elf64_Sym*> get_symbol_containing_address(
+        file_addr addr) const;
+    std::optional<const Elf64_Sym*> get_symbol_containing_address(
+        virt_addr addr) const;
+
    private:
     int fd_;
     std::filesystem::path path_;
     std::size_t file_size_;
     std::byte* data_;
     Elf64_Ehdr header_;
+    std::vector<Elf64_Shdr> section_headers_;
+    std::unordered_map<std::string_view, Elf64_Shdr*> section_map_;
+    virt_addr load_bias_;
+    std::vector<Elf64_Sym> symbol_table_;
+
+    // Maps names to multiple potential symbol table entries
+    // In a real ELF binary, the same name can legitimately refer to more than
+    // one symbol:
+    // - A local static function and a global function can share a name.
+    // - Weak symbols vs strong symbols.
+    // - The same name appearing across different sections.
+    // multimap allows multiple values to be stored under same key.
+    // `unordered_*` versions are hash tables (average O(1) lookup, no key
+    // ordering), while plain map/multimap are balanced trees (O(log n), keys
+    // kept sorted).
+    std::unordered_multimap<std::string_view, Elf64_Sym*> symbol_name_map_;
+
+    struct range_comparator {
+        bool operator()(std::pair<file_addr, file_addr> lhs,
+                        std::pair<file_addr, file_addr> rhs) const {
+            return lhs.first < rhs.first;
+        }
+    };
+
+    // Maps a single address range to a single symbol
+    std::map<std::pair<file_addr, file_addr>, Elf64_Sym*, range_comparator>
+        symbol_addr_map_;
+
+    void parse_section_headers();
+    void build_section_map();
+
+    void parse_symbol_table();
+
+    void build_symbol_maps();
 };
+
 }  // namespace gsdb
 
 #endif

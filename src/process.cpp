@@ -1,3 +1,4 @@
+#include <elf.h>
 #include <sys/personality.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
@@ -13,12 +14,14 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iterator>
 #include <libgsdb/error.hpp>
 #include <libgsdb/process.hpp>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -661,4 +664,23 @@ gsdb::stop_reason gsdb::process::maybe_resume_from_syscall(
     }
 
     return reason;
+}
+
+std::unordered_map<int, std::uint64_t> gsdb::process::get_auxv() const {
+    auto path = "/proc/" + std::to_string(pid_) + "/auxv";
+    std::ifstream auxv(path);
+
+    std::unordered_map<int, std::uint64_t> ret;
+    std::uint64_t id, value;
+
+    auto read = [&](auto& into) {
+        auxv.read(reinterpret_cast<char*>(&into), sizeof(into));
+    };
+
+    for (read(id); id != AT_NULL; read(id)) {
+        read(value);
+        ret[id] = value;
+    }
+
+    return ret;
 }

@@ -13,6 +13,7 @@
 #include <libgsdb/watchpoint.hpp>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -168,6 +169,12 @@ class process {
     void set_syscall_catch_policy(syscall_catch_policy info) {
         syscall_catch_policy_ = std::move(info);
     }
+
+    /**
+     * Maps the macro values (for example, `AT_ENTRY`) to the value of the
+     * corresponding entry in the auxiliary vector
+     */
+    std::unordered_map<int, std::uint64_t> get_auxv() const;
 
    private:
     // private constructor so that client code must use the static `launch` and

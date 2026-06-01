@@ -410,3 +410,57 @@ _Figure 1: ELF binary layout._
 ELF files can be megabytes or even gigabytes in size.
 
 One convenient way to handle large files is to use the `mmap` syscall to map them into the virtual memory of our process, letting us pretend we’ve read the file completely into memory.
+
+#### String Tables
+
+A **string table** is a list of null-terminated strings.
+
+It allows the rest of the ELF file to refer to a string using a byte offset into the string table.
+
+ELF file has two string tables: the general string table, which lives in the `.strtab` section, and the section name string table, which lives in the `.shstrtab` section.
+
+The more robust way to handle string tables is to read the `sh_link` field of the section header to which the string table index belongs, which provides the section index of the string table for that section.
+
+To convert between file addresses and virtual addresses, we need to know where the ELF file is loaded in virtual memory.
+
+We must consider three different kinds of addresses
+
+- absolute offsets from the start of the object file (corresponding to the `gsdb::file_offset` type)
+- virtual addresses specified in the ELF file (corresponding to the `gsdb::file_addr` type)
+- the actual virtual addresses in the executing program (corresponding to the `gsdb::virt_addr` type).
+
+Contiguous sections in the ELF file don’t necessarily map contiguously into memory; gaps could exist between them.
+
+Linux assigns memory permissions to pages of memory, which are 4,096 bytes in size on x64, so if sections with different permissions aren’t aligned to 4,096 bytes, the system must load them with gaps between them.
+
+The file addresses and the real virtual addresses will only ever differ by a single offset for the entire ELF file, called the **load bias**.
+
+![ELF Sections in Memory](file-offsets.jpg)
+_Figure 2: Possible layouts of ELF sections in memory_
+
+#### Symbol Table
+
+A symbol table contains linking-related information about global program entities such as variables and functions.
+
+- The size of the entity (for example, the object size or number of bytes in a function’s machine code)
+- Whether the entity is available to other ELF files that might link against it
+- The category to which this entity belongs (for example, function, variable, ELF section, or file)
+
+An ELF file may have two symbol tables:
+
+- a complete symbol table named `.symtab` with `SHT_SYMTAB` as the section header’s `sh_type` member, and
+- an _abbreviated_ symbol table named `.dynsym` with `SHT_DYNSYM` as the section type, which contains only the set of symbols needed for dynamic linking.
+
+Each ELF file may have at most one of each and _might NOT_ have a symbol table at all.
+
+##### Auxiliary Vectors
+
+To find the code’s load address when constructing the `gsdb::elf` object, we could parse `/proc/<pid>/maps`.
+
+The **auxiliary vector** is an array of identifier/value pairs that the operating system kernel uses to provide information about a process to user space.
+
+It can encode information such as where the ELF program headers were loaded, the PID of the process, and, most importantly for us, the real entry point of the program.
+
+When the process is started, the auxiliary vector is put in memory just above the program stack.
+
+Linux provides the same data in the `/proc/<pid>/auxv` file.

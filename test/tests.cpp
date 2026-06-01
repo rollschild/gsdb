@@ -13,9 +13,11 @@
 #include <fstream>
 #include <libgsdb/bit.hpp>
 #include <libgsdb/process.hpp>
+#include <libgsdb/target.hpp>
 #include <regex>
 #include <string>
 
+#include "libgsdb/elf.hpp"
 #include "libgsdb/error.hpp"
 #include "libgsdb/pipe.hpp"
 #include "libgsdb/register_info.hpp"
@@ -594,4 +596,29 @@ TEST_CASE("Syscall catchpoints work", "[catchpoint]") {
     REQUIRE(reason.syscall_info->entry == false);
 
     close(dev_null);
+}
+
+TEST_CASE("ELF parser works", "[elf]") {
+    auto path = std::string(TARGETS_DIR) + "/hello_gsdb";
+    gsdb::elf elf(path);
+    auto entry = elf.get_header().e_entry;
+    // Ensure that symbol at the entry point offset is the `_start` function.
+    // Supplied by C++ toolchain, this function sets up the support that the
+    // program needs to run before calling `main`.
+    auto sym = elf.get_symbol_at_address(file_addr{elf, entry});
+    auto name = elf.get_string(sym.value()->st_name);
+    REQUIRE(name == "_start");
+
+    auto syms = elf.get_symbols_by_name("_start");
+    name = elf.get_string(syms.at(0)->st_name);
+    REQUIRE(name == "_start");
+
+    // Pretend ELF file is loaded at 0xcafecafe
+    elf.notify_loaded(virt_addr{0xcafecafe});
+
+    // Ensure that `0xcafecafe + entry` finds the `_start` symbol if we look up
+    // the symbol by address rather than offset
+    sym = elf.get_symbol_at_address(virt_addr{0xcafecafe + entry});
+    name = elf.get_string(sym.value()->st_name);
+    REQUIRE(name == "_start");
 }

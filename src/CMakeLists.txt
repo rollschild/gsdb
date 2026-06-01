@@ -8,7 +8,9 @@ add_library(
   disassembler.cpp
   watchpoint.cpp
   syscalls.cpp
-  elf.cpp)
+  elf.cpp
+  types.cpp
+  target.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
 #
 # Creates a namespaced alias for the libgsdb target.
