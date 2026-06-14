@@ -464,3 +464,49 @@ It can encode information such as where the ELF program headers were loaded, the
 When the process is started, the auxiliary vector is put in memory just above the program stack.
 
 Linux provides the same data in the `/proc/<pid>/auxv` file.
+
+### Debug Information
+
+**DWARF** is the main debug information format used on Linux.
+
+It relates a binary back to the source code that produced it, allowing us to match machine instructions to lines of source code, locate source functions and variables in the running process, describe the types that exist in the program, and more.
+
+#### DWARF
+
+`.debug_info` section: main repository of knowledge about your program’s source-level entities and how they map to the machine code.
+
+Because the compiler can encode attributes in multiple ways, each attribute value also has an associated form that specifies its encoding. You can see the form associated with each attribute value by passing `dwarfdump` the `-M` flag in addition to the usual `-a` flag.
+
+##### abbreviation table
+
+A **DIE** is a **Debugging Information Entry** — the fundamental
+building block of DWARF debug info.
+
+The structure is:
+
+```txt
+  .debug_info section
+   └── Compilation Unit (CU header + root DIE)
+        └── root DIE (DW_TAG_compile_unit)
+             ├── DIE (DW_TAG_subprogram = a function)
+             │    ├── DIE (DW_TAG_formal_parameter)
+             │    └── DIE (DW_TAG_variable = a local)
+             ├── DIE (DW_TAG_base_type = "int")
+             └── DIE (DW_TAG_variable = a global)
+```
+
+Each entry of an abbreviation table contains a tag, a bit that encodes whether the DIE has children, a list of attribute types, and the form used to encode each attribute. The DIEs then store only an index into the abbreviation table and the attribute values for the DIE.
+
+The `.debug_abbrev` section contains several abbreviation tables. Each compile unit in the `.debug_info` section uses exactly one abbreviation table, but different compile units may share the same table.
+
+**Little Endian Base 128 (LEB128)**: encoding scheme used by DWARF for some integers, a variable-length encoding scheme for integers that attempts to minimize the storage required for small integers while allowing the encoding of larger integers.
+
+`ULEB128`: for unsigned integers.
+
+Each abbreviation entry starts with the abbreviation code used to reference the table, encoded as a `ULEB128` integer.
+
+Directly following the abbreviation code is another ULEB128 that encodes the entry’s tag.
+
+DWARF encodes DIE in a tree structure.
+
+The root node of each compile unit is the DIE representing the compile unit itself.

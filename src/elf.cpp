@@ -124,7 +124,7 @@ const Elf64_Shdr* gsdb::elf::get_section_containing_address(
         return nullptr;
     }
     for (auto& section : section_headers_) {
-        if (section.sh_addr < addr.addr() and
+        if (section.sh_addr <= addr.addr() and
             section.sh_addr + section.sh_size > addr.addr()) {
             return &section;
         }

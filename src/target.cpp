@@ -21,7 +21,9 @@ std::unique_ptr<gsdb::elf> create_loaded_elf(
     auto auxv = proc.get_auxv();
     auto obj = std::make_unique<gsdb::elf>(path);
     obj->notify_loaded(
-        // by subtracting the load address of the entry point in the ELF header
+        // runtime virtual address = ELF file address + load_bias
+        // ELF file address        = runtime virtual address - load_bias
+        // By subtracting the load address of the entry point in the ELF header
         // from the actual load address of the entry point
         gsdb::virt_addr(auxv[AT_ENTRY] - obj->get_header().e_entry));
     return obj;
