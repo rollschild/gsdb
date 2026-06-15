@@ -7,6 +7,8 @@
 #include <libgsdb/bit.hpp>
 #include <libgsdb/dwarf.hpp>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -386,6 +388,13 @@ gsdb::die::children_range gsdb::die::children() const {
     return children_range(*this);
 }
 
+bool gsdb::die::contains(std::uint64_t attribute) const {
+    auto& specs = abbrev_->attr_specs;
+    return std::find_if(std::begin(specs), std::end(specs), [=](auto spec) {
+               return spec.attr = attribute;
+           }) != std::end(specs);
+}
+
 gsdb::attr gsdb::die::operator[](std::uint64_t attribute) const {
     auto& specs = abbrev_->attr_specs;
     for (std::size_t i = 0; i < specs.size(); ++i) {
@@ -659,4 +668,100 @@ bool gsdb::die::contains_address(gsdb::file_addr address) const {
     }
 
     return false;
+}
+
+const gsdb::compile_unit* gsdb::dwarf::compile_unit_containing_address(
+    gsdb::file_addr addr) const {
+    for (auto& cu : compile_units_) {
+        if (cu->root().contains_address(addr)) {
+            return cu.get();
+        }
+    }
+    return nullptr;
+}
+
+std::optional<gsdb::die> gsdb::dwarf::function_containing_address(
+    file_addr addr) const {
+    // indexing the DWARF information to ensure we populate `function_index_`
+    index();
+
+    for (auto& [name, entry] : function_index_) {
+        cursor cur({entry.pos, entry.cu->data().end()});
+        auto d = parse_die(*entry.cu, cur);
+        // whether the DIE contains the given address and is a regular function
+        if (d.contains_address(addr) and
+            d.abbrev_entry()->tag == DW_TAG_subprogram) {
+            return d;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::vector<gsdb::die> gsdb::dwarf::find_functions(std::string name) const {
+    index();
+
+    std::vector<die> found;
+    auto [begin, end] = function_index_.equal_range(name);
+    std::transform(begin, end, std::back_inserter(found), [](auto& pair) {
+        // The iterators returned by `std::unordered_multimap` dereference to
+        // key-value pairs,
+        auto [name, entry] = pair;
+        cursor cur({entry.pos, entry.cu->data().end()});
+        return parse_die(*entry.cu, cur);
+    });
+
+    return found;
+}
+
+void gsdb::dwarf::index() const {
+    // Make sure we index the DWARF info only once
+    if (!function_index_.empty()) {
+        return;
+    }
+    // Loop through all compile units and index their root DIEs
+    for (auto& cu : compile_units_) {
+        index_die(cu->root());
+    }
+}
+
+std::optional<std::string_view> gsdb::die::name() const {
+    if (contains(DW_AT_name)) {
+        return (*this)[DW_AT_name].as_string();
+    }
+    if (contains(DW_AT_specification)) {
+        // Resolve the attribute as a reference to another DIE.
+        // We call .name rather than just grabbing the DW_AT_name attribute on
+        // the result to account for chains of references (for example,
+        // out-of-line definitions that were inlined).
+        return (*this)[DW_AT_specification].as_reference().name();
+    }
+    if (contains(DW_AT_abstract_origin)) {
+        return (*this)[DW_AT_abstract_origin].as_reference().name();
+    }
+
+    return std::nullopt;
+}
+
+void gsdb::dwarf::index_die(const die& current) const {
+    // A DIE has an address range if it contains a DW_AT_low_pc or a
+    // DW_AT_ranges attribute.
+    bool has_range =
+        current.contains(DW_AT_low_pc) or current.contains(DW_AT_ranges);
+    // DWARF specifies functions with the `DW_TAG_subprogram` tag or, if the DIE
+    // represents a function whose body the compiler has copied from elsewhere,
+    // the `DW_TAG_inlined_subroutine` tag.
+    bool is_function = current.abbrev_entry()->tag == DW_TAG_subprogram or
+                       current.abbrev_entry()->tag == DW_TAG_inlined_subroutine;
+
+    if (has_range and is_function) {
+        if (auto name = current.name(); name) {
+            index_entry entry{current.cu(), current.position()};
+            function_index_.emplace(*name, entry);
+        }
+    }
+
+    for (auto child : current.children()) {
+        index_die(child);
+    }
 }

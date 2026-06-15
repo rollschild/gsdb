@@ -8,6 +8,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -166,6 +167,15 @@ class dwarf {
         return compile_units_;
     }
 
+    // retrieve the compile unit to which a given file address belongs
+    const compile_unit* compile_unit_containing_address(
+        file_addr address) const;
+    // retrieve the function to which a given file address belongs
+    std::optional<die> function_containing_address(file_addr address) const;
+
+    // retrieve the function DIEs for functions that match the given name
+    std::vector<die> find_functions(std::string name) const;
+
    private:
     const elf* elf_;
 
@@ -175,6 +185,27 @@ class dwarf {
         abbrev_tables_;  // store the parsed tables
 
     std::vector<std::unique_ptr<compile_unit>> compile_units_;
+
+    // Index the entire set of DIEs in the `dwarf` object
+    void index() const;
+    // index a single DIE
+    void index_die(const die& current) const;
+
+    struct index_entry {
+        const compile_unit* cu;
+        const std::byte* pos;  // pointer to beginning of the DIE
+    };
+
+    // Maps function names to index entries.
+    // Multiple functions can share the same thus, thus the multimap.
+    // `mutable`: allows for implementing caches that don't affect the logical
+    // state of the type, but speed up certain operations.
+    // `mutable` lets a data member be modified even through a
+    // const object or inside a const member function. Normally,
+    // inside a const method every member is treated as
+    // read-only; mutable carves out an exception for this one
+    // field.
+    mutable std::unordered_multimap<std::string, index_entry> function_index_;
 };
 
 class die {
@@ -211,6 +242,8 @@ class die {
      * DIE
      */
     bool contains_address(file_addr address) const;
+
+    std::optional<std::string_view> name() const;
 
    private:
     const std::byte* pos_ = nullptr;

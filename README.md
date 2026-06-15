@@ -510,3 +510,9 @@ Directly following the abbreviation code is another ULEB128 that encodes the ent
 DWARF encodes DIE in a tree structure.
 
 The root node of each compile unit is the DIE representing the compile unit itself.
+
+_Most_ function DIEs encode the name of the function as a `DW_AT_name` attribute. But two special types of function encode the name indirectly.
+
+DIEs that represent **out-of-line definitions** (which occur, for example, when we declare a member function in a header file and define it in a source file) contain a `DW_AT_specification` attribute that points to the DIE representing the original declaration.
+
+Also, inlined functions (those whose body the compiler has copy-pasted into the body of another function) contain a `DW_AT_abstract_origin` attribute that points to the DIE representing the copied function.

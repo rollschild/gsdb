@@ -13,9 +13,11 @@
 #include <libgsdb/bit.hpp>
 #include <libgsdb/elf.hpp>
 #include <libgsdb/error.hpp>
+#include <memory>
 #include <optional>
 #include <string_view>
 
+#include "libgsdb/dwarf.hpp"
 #include "libgsdb/types.hpp"
 
 gsdb::elf::elf(const std::filesystem::path& path) {
@@ -54,6 +56,8 @@ gsdb::elf::elf(const std::filesystem::path& path) {
     parse_symbol_table();
 
     build_symbol_maps();
+
+    dwarf_ = std::make_unique<dwarf>(*this);
 }
 
 gsdb::elf::~elf() {
