@@ -5,7 +5,8 @@ function(add_test_cpp_target name)
   # -g: generate debug info
   # -O0: disable optimizations
   # cmake-format: on
-  target_compile_options(${name} PRIVATE -g -O0 -pie)
+  # `-gdwarf-4`: outputs DWARF 4 information
+  target_compile_options(${name} PRIVATE -g -O0 -pie -gdwarf-4)
 
   # Ensure whenever we build the `tests` target, we also build the test programs
   add_dependencies(tests ${name})
@@ -25,3 +26,7 @@ add_test_cpp_target(anti_debugger)
 
 add_test_asm_target(reg_write)
 add_test_asm_target(reg_read)
+
+add_executable(multi_cu multi_cu_main.cpp multi_cu_other.cpp)
+target_compile_options(multi_cu PRIVATE -g -O0 -pie -gdwarf-4)
+add_dependencies(tests multi_cu)
