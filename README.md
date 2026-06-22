@@ -516,3 +516,58 @@ _Most_ function DIEs encode the name of the function as a `DW_AT_name` attribute
 DIEs that represent **out-of-line definitions** (which occur, for example, when we declare a member function in a header file and define it in a source file) contain a `DW_AT_specification` attribute that points to the DIE representing the original declaration.
 
 Also, inlined functions (those whose body the compiler has copy-pasted into the body of another function) contain a `DW_AT_abstract_origin` attribute that points to the DIE representing the copied function.
+
+### Line Tables
+
+`dwarfdump`.
+
+#### Interpreting the Line Table Program
+
+##### The Program Header
+
+12 fields:
+
+- `unit_length` (`uint32_t`) 
+  - The byte size of the line number information for this compile unit, not including the unit_length field itself.
+- `version` (`uint16_t`) 
+  - The version of the line number information. For DWARF 4, this value is 4.
+- `header_length` (`uint32_t`) 
+  - The number of bytes from the end of the header_length field until the beginning of the line number program.
+- `minimum_instruction_length` (`uint8_t`) 
+  - The byte size of the smallest machine instruction. On x64, this is 1.
+- `maximum_operations_per_instruction` (`uint8_t`) 
+  - The maximum number of operations that may be encoded in an instruction. For architectures that are not very long instruction word (VLIW) architectures, this will always be 1. The x64 architecture is not VLIW, so it always has the value 1 for this field
+- `default_is_stmt` (`uint8_t`) 
+  - Whether rows in the matrix should be interpreted as the beginning of source code statements by default. This allows the producer to save space if most machine instructions are ordered in the same way as the source code statements, which is usually true for unoptimized code.
+- `line_base` (`int8_t`) 
+  - The minimum value that special opcodes can add to the line register. You’ll learn about special opcodes soon.
+- `line_range` (`uint8_t`) 
+  - The range of values that special opcodes can add to the line register.
+- `opcode_base` (`uint8_t`) 
+  - The number assigned to the first special opcode.
+- `standard_opcode_lengths` (an array of `uint8_t` values) 
+  - The number of operands that each standard opcode takes. The first element of this array corresponds to the first standard opcode, the second element to the second opcode, and so on. This field allows producers to describe any additional standard opcodes they’ve used to consumers.
+- `include_directories` (a sequence of null-terminated strings) 
+  - The paths that were searched for included files. Each entry is either an absolute path or a path relative to the compilation directory (specified with the DW_AT_comp_dir attribute on the root compile unit DIE). The sequence ends with a single null byte.
+- `file_names` (a sequence of file entries) 
+  - The source files involved in this compilation. Each entry contains the following: a null-terminated string representing the filename, either as an absolute path, a path relative to the compilation directory, or a path relative to one of the directories specified in the include_directories field; a ULEB128 representing the directory to which this path is relative, if it is a relative path (a value of 0 indicates that the compilation directory contains the path, while a value greater than 0 represents an index into the include_directories field, which numbers its entries starting at 1); a ULEB128 representing the file’s last modification time; and a ULEB128 representing the byte size of the file. A single null byte terminates the sequence of entries.
+
+Line table programs live in the `.debug_line` section of the object file.
+
+`DW_AT_stmt_list` attribute of the root compile unit DIE identifies the specific line table program for a given compile unit.
+
+##### The Abstract Machine
+
+The line table’s abstract machine includes storage for a single row of the line table.
+
+**Registers**.
+
+##### The Program instructions
+
+Each instruction belongs to one of the three categories:
+
+- **standard opcode**
+- **extended opcode**
+- **special opcode**
+
+We use extended opcodes for instructions that require more space to encode or that don’t occur often enough to merit taking up one of the 255 slots allocated to standard or special opcodes.

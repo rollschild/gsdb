@@ -725,3 +725,44 @@ TEST_CASE("Range list", "[dwarf]") {
     REQUIRE(list.contains(file_addr{elf, 0x12341267}));
     REQUIRE(!list.contains(file_addr{elf, 0x12341268}));
 }
+
+/**
+$ readelf
+  --debug-dump=decodedline build/test/targets/hello_gsdb
+
+  hello_gsdb.cpp  4  0x1139
+  hello_gsdb.cpp  4  0x113d
+  hello_gsdb.cpp  4  0x114c
+  hello_gsdb.cpp  4  0x1151
+  hello_gsdb.cpp  -  0x1153
+*/
+TEST_CASE("Line table", "[dwarf]") {
+    auto path = std::string(TARGETS_DIR) + "/hello_gsdb";
+    gsdb::elf elf(path);
+    gsdb::dwarf dwarf(elf);
+
+    REQUIRE(dwarf.compile_units().size() == 1);
+
+    auto& cu = dwarf.compile_units()[0];
+    auto it = cu->lines().begin();
+
+    // line 3 is blank
+    REQUIRE(it->line == 4);  // main function
+    REQUIRE(it->file_entry->path.filename() == "hello_gsdb.cpp");
+
+    // still line 4 since `std::puts` on same line with main
+    ++it;
+    REQUIRE(it->line == 4);
+
+    ++it;
+    REQUIRE(it->line == 4);
+
+    ++it;
+    REQUIRE(it->line == 4);
+
+    ++it;
+    REQUIRE(it->end_sequence);
+
+    ++it;
+    REQUIRE(it == cu->lines().end());
+}

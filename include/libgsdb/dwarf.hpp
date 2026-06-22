@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -136,11 +137,125 @@ struct abbrev {
     std::vector<attr_spec> attr_specs;
 };
 
+class line_table {
+   public:
+    // Represent file entries
+    struct file {
+        std::filesystem::path path;
+        std::uint64_t mod_time;
+        std::uint64_t file_len;
+    };
+    struct entry;
+    class iterator;
+
+    iterator begin() const;
+    iterator end() const;
+
+    line_table(span<const std::byte> data, const compile_unit* cu,
+               bool default_is_stmt, std::int8_t line_base,
+               std::uint8_t line_range, std::uint8_t opcode_base,
+               std::vector<std::filesystem::path> include_dirs,
+               std::vector<file> file_names)
+        : data_(data),
+          cu_(cu),
+          default_is_stmt_(default_is_stmt),
+          line_base_(line_base),
+          line_range_(line_range),
+          opcode_base_(opcode_base),
+          include_dirs_(std::move(include_dirs)),
+          file_names_(std::move(file_names)) {}
+
+    line_table(const line_table&) = delete;
+    line_table& operator=(const line_table&) = delete;
+
+    const compile_unit& cu() const { return *cu_; }
+    const std::vector<file>& file_names() const { return file_names_; }
+
+    /**
+     * Takes a file address and returns an iterator to the line table entry that
+     * corresponds to that address
+     */
+    iterator get_entry_by_address(file_addr address) const;
+    /**
+     * A single line of source code may correspond to multiple line table
+     * entries
+     */
+    std::vector<iterator> get_entries_by_line(std::filesystem::path path,
+                                              std::size_t line) const;
+
+   private:
+    span<const std::byte> data_;
+    // for retrieving elements such as the compilation directory
+    const compile_unit* cu_;
+    bool default_is_stmt_;
+    std::int8_t line_base_;
+    std::uint8_t line_range_;
+    std::uint8_t opcode_base_;
+    std::vector<std::filesystem::path> include_dirs_;
+    // allows it to be modified even when the `line_table` is marked `const`
+    mutable std::vector<file> file_names_;
+};
+
+/**
+ * Registers the abstract machine stores
+ */
+struct line_table::entry {
+    file_addr address;
+    std::uint64_t file_index = 1;
+    std::uint64_t line = 1;
+    std::uint64_t column = 0;
+    bool is_stmt;
+    bool basic_block_start = false;
+    bool end_sequence = false;
+    bool prologue_end = false;
+    bool epilogue_begin = false;
+    std::uint64_t discriminator = 0;
+    //  A pointer to the actual file data for this entry, as this information is
+    //  much more useful to users than the file_index member
+    file* file_entry = nullptr;
+
+    bool operator==(const entry& rhs) const {
+        return address == rhs.address and file_index == rhs.file_index and
+               line == rhs.line and column == rhs.column and
+               discriminator == rhs.discriminator;
+    }
+};
+
+class line_table::iterator {
+   public:
+    using value_type = entry;
+    using pointer = const entry*;
+    using reference = const entry&;
+    using difference_type = std::ptrdiff_t;
+    using iterator_category = std::forward_iterator_tag;  // multipass
+
+    iterator(const line_table* table_);
+    iterator() = default;
+    iterator(const iterator&) = default;
+    iterator& operator=(const iterator&) = default;
+
+    const line_table::entry& operator*() const { return current_; }
+    const line_table::entry* operator->() const { return &current_; }
+
+    bool operator==(const iterator& rhs) const { return pos_ == rhs.pos_; }
+    bool operator!=(const iterator& rhs) const { return pos_ != rhs.pos_; }
+
+    iterator& operator++();
+    iterator operator++(int);
+
+   private:
+    const line_table* table_;
+    line_table::entry current_;
+    line_table::entry registers_;
+    const std::byte* pos_;
+
+    bool execute_instruction();
+};
+
 class compile_unit {
    public:
     compile_unit(dwarf& parent, span<const std::byte> data,
-                 std::size_t abbrev_offset)
-        : parent_(&parent), data_(data), abbrev_offset_(abbrev_offset) {}
+                 std::size_t abbrev_offset);
 
     const dwarf* dwarf_info() const { return parent_; }
     span<const std::byte> data() const { return data_; }
@@ -149,10 +264,13 @@ class compile_unit {
 
     die root() const;
 
+    const line_table& lines() const { return *line_table_; }
+
    private:
     dwarf* parent_;
     span<const std::byte> data_;
     std::size_t abbrev_offset_;
+    std::unique_ptr<line_table> line_table_;
 };
 
 class dwarf {
@@ -175,6 +293,16 @@ class dwarf {
 
     // retrieve the function DIEs for functions that match the given name
     std::vector<die> find_functions(std::string name) const;
+
+    /**
+     * Finds the compile unit corresponding to the given file address, retrieves
+     * the line table for that compile unit, and returns the relevant entry
+     */
+    line_table::iterator line_entry_at_address(file_addr address) const {
+        auto cu = compile_unit_containing_address(address);
+        if (!cu) return {};
+        return cu->lines().get_entry_by_address(address);
+    }
 
    private:
     const elf* elf_;
@@ -206,6 +334,11 @@ class dwarf {
     // read-only; mutable carves out an exception for this one
     // field.
     mutable std::unordered_multimap<std::string, index_entry> function_index_;
+};
+
+struct source_location {
+    const line_table::file* file;
+    std::uint64_t line;
 };
 
 class die {
@@ -244,6 +377,10 @@ class die {
     bool contains_address(file_addr address) const;
 
     std::optional<std::string_view> name() const;
+
+    source_location location() const;
+    const line_table::file& file() const;
+    std::uint64_t line() const;
 
    private:
     const std::byte* pos_ = nullptr;
