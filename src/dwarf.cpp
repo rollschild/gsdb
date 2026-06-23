@@ -517,7 +517,7 @@ gsdb::die::children_range gsdb::die::children() const {
 bool gsdb::die::contains(std::uint64_t attribute) const {
     auto& specs = abbrev_->attr_specs;
     return std::find_if(std::begin(specs), std::end(specs), [=](auto spec) {
-               return spec.attr = attribute;
+               return spec.attr == attribute;
            }) != std::end(specs);
 }
 
