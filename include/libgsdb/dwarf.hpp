@@ -304,6 +304,14 @@ class dwarf {
         return cu->lines().get_entry_by_address(address);
     }
 
+    /**
+     * Calculates the inline stack at a given file address.
+     *  The first element is the outer, non-inlined function. Subsequent
+     * elements represent functions inlined into the preceding function that
+     * contain the given address.
+     */
+    std::vector<die> inline_stack_at_address(file_addr address) const;
+
    private:
     const elf* elf_;
 

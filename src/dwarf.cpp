@@ -1084,3 +1084,32 @@ std::uint64_t gsdb::die::line() const {
     }
     return (*this)[DW_AT_decl_line].as_int();
 }
+
+std::vector<gsdb::die> gsdb::dwarf::inline_stack_at_address(
+    gsdb::file_addr address) const {
+    // optional
+    auto func = function_containing_address(address);
+    std::vector<gsdb::die> stack;
+
+    if (func) {
+        stack.push_back(*func);
+        // looking for child DIEs that represent inlined functions and contain
+        // the given address
+        while (true) {
+            const auto& chilren = stack.back().children();
+            auto found =
+                std::find_if(chilren.begin(), chilren.end(), [=](auto& child) {
+                    return child.abbrev_entry()->tag ==
+                               DW_TAG_inlined_subroutine and
+                           child.contains_address(address);
+                });
+            if (found == chilren.end()) {
+                break;
+            } else {
+                stack.push_back(*found);
+            }
+        }
+    }
+
+    return stack;
+}

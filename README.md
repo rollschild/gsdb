@@ -571,3 +571,22 @@ Each instruction belongs to one of the three categories:
 - **special opcode**
 
 We use extended opcodes for instructions that require more space to encode or that don’t occur often enough to merit taking up one of the 255 slots allocated to standard or special opcodes.
+
+### Source-Level Break points and Stepping
+
+#### Function Inlining
+
+**Function inlining** is a _compiler optimization_ that replaces a call to a function with the body of that function.
+
+`always_inline`?
+
+```cpp
+__attribute__((always_inline))
+void call_puts() {
+    std::puts("Hello");
+}
+```
+
+##### How DWARF represents inlining
+
+DWARF does so using DIEs with the `DW_TAG_inlined_subroutine` tag.

@@ -36,6 +36,8 @@ class target {
     elf& get_elf() { return *elf_; }
     const elf& get_elf() const { return *elf_; }
 
+    void notify_stop(const gsdb::stop_reason& reason);
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), elf_(std::move(obj)) {}

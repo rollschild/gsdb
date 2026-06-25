@@ -75,6 +75,8 @@ class syscall_catch_policy {
     std::vector<int> to_catch_;  // syscall IDs
 };
 
+class target;
+
 class process {
    public:
     static std::unique_ptr<process> launch(
@@ -176,6 +178,8 @@ class process {
      */
     std::unordered_map<int, std::uint64_t> get_auxv() const;
 
+    void set_target(target* tgt) { target_ = tgt; }
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -208,6 +212,8 @@ class process {
         syscall_catch_policy::catch_none();
 
     bool expecting_syscall_exit_ = false;
+
+    target* target_ = nullptr;
 };
 }  // namespace gsdb
 

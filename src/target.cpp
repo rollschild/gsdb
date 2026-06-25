@@ -6,6 +6,7 @@
 #include <libgsdb/types.hpp>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "libgsdb/process.hpp"
 
@@ -34,7 +35,10 @@ std::unique_ptr<gsdb::target> gsdb::target::launch(
     std::filesystem::path path, std::optional<int> stdout_replacement) {
     auto proc = process::launch(path, true, stdout_replacement);
     auto obj = create_loaded_elf(*proc, path);
-    return std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
+    auto tgt =
+        std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
+    tgt->get_process().set_target(tgt.get());
+    return tgt;
 }
 
 std::unique_ptr<gsdb::target> gsdb::target::attach(pid_t pid) {
@@ -45,5 +49,8 @@ std::unique_ptr<gsdb::target> gsdb::target::attach(pid_t pid) {
         std::filesystem::path("/proc/") / std::to_string(pid) / "exe";
     auto proc = process::attach(pid);
     auto obj = create_loaded_elf(*proc, elf_path);
-    return std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
+    auto tgt =
+        std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
+    tgt->get_process().set_target(tgt.get());
+    return tgt;
 }

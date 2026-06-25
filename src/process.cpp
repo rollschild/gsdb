@@ -18,6 +18,7 @@
 #include <iterator>
 #include <libgsdb/error.hpp>
 #include <libgsdb/process.hpp>
+#include <libgsdb/target.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -210,6 +211,9 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
             } else if (reason.trap_reason == trap_type::syscall) {
                 reason = maybe_resume_from_syscall(reason);
             }
+        }
+        if (target_) {
+            target_->notify_stop(reason);
         }
     }
 
