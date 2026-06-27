@@ -11,7 +11,8 @@ add_library(
   elf.cpp
   types.cpp
   target.cpp
-  dwarf.cpp)
+  dwarf.cpp
+  stack.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
 #
 # Creates a namespaced alias for the libgsdb target.

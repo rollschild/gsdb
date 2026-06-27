@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "libgsdb/elf.hpp"
 #include "libgsdb/process.hpp"
 
 namespace {
@@ -53,4 +54,16 @@ std::unique_ptr<gsdb::target> gsdb::target::attach(pid_t pid) {
         std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
     tgt->get_process().set_target(tgt.get());
     return tgt;
+}
+
+gsdb::file_addr gsdb::target::get_pc_file_address() const {
+    return process_->get_pc().to_file_addr(*elf_);
+}
+
+/**
+ * Everyt time the process halts, recalculate the inline height
+ */
+void gsdb::target::notify_stop(
+    [[maybe_unused]] const gsdb::stop_reason& reason) {
+    stack_.reset_inline_height();
 }

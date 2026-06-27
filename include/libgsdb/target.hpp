@@ -10,6 +10,9 @@
 #include <memory>
 #include <optional>
 
+#include "libgsdb/stack.hpp"
+#include "libgsdb/types.hpp"
+
 namespace gsdb {
 /**
  * Manage the symbolic level of the program that we’re debugging, such as
@@ -38,12 +41,22 @@ class target {
 
     void notify_stop(const gsdb::stop_reason& reason);
 
+    /**
+     * Convert the program counter from virtual address to file address
+     */
+    file_addr get_pc_file_address() const;
+
+    stack& get_stack() { return stack_; }
+    const stack& get_stack() const { return stack_; }
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
-        : process_(std::move(proc)), elf_(std::move(obj)) {}
+        : process_(std::move(proc)), elf_(std::move(obj)), stack_(this) {}
 
     std::unique_ptr<process> process_;
     std::unique_ptr<elf> elf_;
+
+    stack stack_;
 };
 }  // namespace gsdb
 
