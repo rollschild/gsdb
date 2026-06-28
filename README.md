@@ -590,3 +590,19 @@ void call_puts() {
 ##### How DWARF represents inlining
 
 DWARF does so using DIEs with the `DW_TAG_inlined_subroutine` tag.
+
+#### Source-Level Stepping
+
+Source-level stepping operations walk through statements at the level of the original source code, rather than at the level of the machine code.
+
+Three kinds of steps provided:
+
+- step in
+- step over
+- step out
+
+##### Step In
+
+Step through single machine instructions until the program counter lands on an instruction that belongs to a different line of source code from the one at which it began.
+
+When the program counter arrives at a new source line, it might have entered a new function. In that case, we also skip over the **prologue** of that function, which sets up the stack.

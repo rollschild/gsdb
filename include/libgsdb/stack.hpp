@@ -18,6 +18,13 @@ class stack {
     std::uint32_t inline_height() const { return inline_height_; }
     const target& get_target() const { return *target_; }
 
+    /**
+     * Handle the situation in which execution is at the beginning of an inlined
+     * function. We pretend to step into the function by decrementing the
+     * current inline height and returning
+     */
+    void simulate_inlined_step_in() { --inline_height_; }
+
    private:
     // target to which this stack belongs
     target* target_ = nullptr;

@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 
+#include "libgsdb/dwarf.hpp"
 #include "libgsdb/stack.hpp"
 #include "libgsdb/types.hpp"
 
@@ -48,6 +49,13 @@ class target {
 
     stack& get_stack() { return stack_; }
     const stack& get_stack() const { return stack_; }
+
+    stop_reason step_in();
+    stop_reason step_out();
+    stop_reason step_over();
+
+    gsdb::line_table::iterator line_entry_at_pc() const;
+    gsdb::stop_reason run_until_address(virt_addr address);
 
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
