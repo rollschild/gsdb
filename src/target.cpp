@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "libgsdb/breakpoint_site.hpp"
+#include "libgsdb/disassembler.hpp"
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/elf.hpp"
 #include "libgsdb/process.hpp"
@@ -151,6 +152,50 @@ gsdb::stop_reason gsdb::target::run_until_address(virt_addr address) {
         process_->breakpoint_sites().remove_by_address(
             breakpoint_to_remove->address());
     }
+
+    return reason;
+}
+
+gsdb::stop_reason gsdb::target::step_over() {
+    auto orig_line = line_entry_at_pc();
+    // to determine whether the next instruction to be executed is a function
+    // call
+    disassembler disas(*process_);
+    gsdb::stop_reason reason;
+    auto& stack = get_stack();
+    do {
+        auto inline_stack = stack.inline_stack_at_pc();
+        // whether the stack contains any inline frames
+        auto at_start_of_inline_frame = stack.inline_height() > 0;
+        if (at_start_of_inline_frame) {
+            // if inline frames, whether we are at the start of _one of_ them
+            auto frame_to_skip =
+                inline_stack[inline_stack.size() - stack.inline_height()];
+            auto return_address = frame_to_skip.high_pc().to_virt_addr();
+            reason = run_until_address(return_address);
+            if (!reason.is_step() or process_->get_pc() != return_address) {
+                return reason;
+            }
+        } else if (auto instructions = disas.disassemble(2, process_->get_pc());
+                   /* instructions[0].text.rfind("call") == 0*/ instructions[0]
+                       .text.starts_with("call")) {
+            reason = run_until_address(instructions[1].address);
+            if (!reason.is_step() or
+                process_->get_pc() != instructions[1].address) {
+                return reason;
+            }
+        } else {
+            reason = process_->step_instruction();
+            if (!reason.is_step()) {
+                return reason;
+            }
+        }
+    } while ((line_entry_at_pc() == orig_line or
+              line_entry_at_pc()->end_sequence) and
+             line_entry_at_pc() !=
+                 line_table::iterator{});  // until execution reaches a new line
+                                           // table entry that is _not_ an end
+                                           // sequence marker
 
     return reason;
 }
