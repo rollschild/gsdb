@@ -65,7 +65,10 @@ continue    - Resume the process
 disassemble - Disassemble machine code to assembly
 memory      - Commands for operating on memory
 register    - Commands for operating on registers
-step        - Step over a single instruction
+finish      - Step-out
+next        - Step-over
+step        - Step-in
+stepi       - Single instruction step
 watchpoint  - Commands for operating on watchpoints
 catchpoint  - Commands for operating on catchpoints
 )";
@@ -739,7 +742,16 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
         print_help(args);
     } else if (is_prefix(command, "breakpoint")) {
         handle_breakpoint_command(*process, args);
+    } else if (is_prefix(command, "next")) {
+        auto reason = target->step_over();
+        handle_stop(*target, reason);
+    } else if (is_prefix(command, "finish")) {
+        auto reason = target->step_out();
+        handle_stop(*target, reason);
     } else if (is_prefix(command, "step")) {
+        auto reason = target->step_in();
+        handle_stop(*target, reason);
+    } else if (is_prefix(command, "stepi")) {
         auto reason = process->step_instruction();
         handle_stop(*target, reason);
     } else if (is_prefix(command, "memory")) {
