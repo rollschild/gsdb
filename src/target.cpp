@@ -14,6 +14,7 @@
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/elf.hpp"
 #include "libgsdb/process.hpp"
+#include "libgsdb/register_info.hpp"
 
 namespace {
 /**
@@ -198,4 +199,26 @@ gsdb::stop_reason gsdb::target::step_over() {
                                            // sequence marker
 
     return reason;
+}
+
+gsdb::stop_reason gsdb::target::step_out() {
+    auto& stack = get_stack();
+    auto inline_stack = stack.inline_stack_at_pc();
+    auto has_inline_frames = inline_stack.size() > 1;
+    auto at_inline_frame = stack.inline_height() < inline_stack.size() - 1;
+
+    if (has_inline_frames and at_inline_frame) {
+        auto current_frame =
+            inline_stack[inline_stack.size() - stack.inline_height() - 1];
+        auto return_address = current_frame.high_pc().to_virt_addr();
+        return run_until_address(return_address);
+    }
+
+    auto frame_pointer = process_->get_registers().read_by_id_as<std::uint64_t>(
+        register_id::rbp);
+
+    auto return_address =
+        process_->read_memory_as<std::uint64_t>(virt_addr{frame_pointer + 8});
+
+    return run_until_address(virt_addr{return_address});
 }

@@ -606,3 +606,12 @@ Three kinds of steps provided:
 Step through single machine instructions until the program counter lands on an instruction that belongs to a different line of source code from the one at which it began.
 
 When the program counter arrives at a new source line, it might have entered a new function. In that case, we also skip over the **prologue** of that function, which sets up the stack.
+
+##### Step Out
+
+If you compile the debugger program with `-fno-omit-frame-pointer`, the frame base of the currently executing function gets stored in the `rbp` register, and the frame base for the caller function gets stored on the stack, just after the return address and just before the local variables.
+
+The **frame base** for a stack frame is the memory address directly after the stored return address.
+
+![Simplified x64 stack with base pointers](stack_with_rbp.jpg)
+_Figure 3: Simplified x64 stack with base pointers_
