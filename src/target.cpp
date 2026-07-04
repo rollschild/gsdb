@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <csignal>
+#include <cstddef>
 #include <filesystem>
 #include <libgsdb/target.hpp>
 #include <libgsdb/types.hpp>
@@ -9,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "libgsdb/breakpoint.hpp"
 #include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/disassembler.hpp"
 #include "libgsdb/dwarf.hpp"
@@ -221,4 +223,41 @@ gsdb::stop_reason gsdb::target::step_out() {
         process_->read_memory_as<std::uint64_t>(virt_addr{frame_pointer + 8});
 
     return run_until_address(virt_addr{return_address});
+}
+
+gsdb::target::find_functions_result gsdb::target::find_functions(
+    std::string name) const {
+    find_functions_result res;
+
+    // locate functions
+    auto dwarf_found = elf_->get_dwarf().find_functions(name);
+    if (dwarf_found.empty()) {
+        // if no functions found, look them up in the ELF symbol table
+        auto elf_found = elf_->get_symbols_by_name(name);
+        for (auto sym : elf_found) {
+            res.elf_functions.push_back(std::pair{elf_.get(), sym});
+        }
+    } else {
+        res.dwarf_functions.insert(res.dwarf_functions.end(),
+                                   dwarf_found.begin(), dwarf_found.end());
+    }
+
+    return res;
+}
+
+gsdb::breakpoint& gsdb::target::create_address_breakpoint(
+    gsdb::virt_addr address, bool hardware, bool internal) {
+    return breakpoints_.push(std::unique_ptr<address_breakpoint>(
+        new address_breakpoint(*this, address, hardware, internal)));
+}
+gsdb::breakpoint& gsdb::target::create_function_breakpoint(
+    std::string function_name, bool hardware, bool internal) {
+    return breakpoints_.push(std::unique_ptr<function_breakpoint>(
+        new function_breakpoint(*this, function_name, hardware, internal)));
+}
+gsdb::breakpoint& gsdb::target::create_line_breakpoint(
+    std::filesystem::path file, std::size_t line, bool hardware,
+    bool internal) {
+    return breakpoints_.push(std::unique_ptr<line_breakpoint>(
+        new line_breakpoint(*this, file, line, hardware, internal)));
 }

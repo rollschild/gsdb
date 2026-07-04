@@ -9,6 +9,7 @@ namespace gsdb {
 // forward declare, so that we can use references and pointers to it
 // no need to include `<libgsdb/process.hpp>`
 class process;
+class breakpoint;
 
 class breakpoint_site {
    public:
@@ -34,10 +35,12 @@ class breakpoint_site {
     bool is_internal() const { return is_internal_; }
 
    private:
-    breakpoint_site(process& proc, virt_addr address, bool is_hardware = false,
+    breakpoint_site(breakpoint* parent, id_type id, process& proc,
+                    virt_addr address, bool is_hardware = false,
                     bool is_internal = false);
     friend process;
 
+    breakpoint* parent_ = nullptr;
     id_type id_;
     process* process_;
     virt_addr address_;

@@ -9,6 +9,7 @@
 #include "libgsdb/types.hpp"
 
 namespace {
+[[maybe_unused]]
 auto get_next_id() {
     // initialized exactly once
     static gsdb::breakpoint_site::id_type id = 0;
@@ -16,15 +17,18 @@ auto get_next_id() {
 }
 }  // namespace
 
-gsdb::breakpoint_site::breakpoint_site(process& proc, virt_addr address,
+gsdb::breakpoint_site::breakpoint_site(gsdb::breakpoint* parent, id_type id,
+                                       process& proc, virt_addr address,
                                        bool is_hardware, bool is_internal)
-    : process_{&proc},
+    : parent_{parent},
+      id_(id),
+      process_{&proc},
       address_{address},
       is_enabled_{false},
       saved_data_{},
       is_hardware_(is_hardware),
       is_internal_(is_internal) {
-    id_ = is_internal_ ? -1 : get_next_id();
+    // id_ = is_internal_ ? -1 : get_next_id();
 }
 
 /* On x86-64, the CPU's execution cycle is: fetch the instruction

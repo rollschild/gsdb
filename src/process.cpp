@@ -364,15 +364,15 @@ void gsdb::process::write_gprs(const user_regs_struct& gprs) {
     }
 }
 
-gsdb::breakpoint_site& gsdb::process::create_breakpoint_site(virt_addr address,
-                                                             bool hardware,
-                                                             bool internal) {
+gsdb::breakpoint_site& gsdb::process::create_breakpoint_site(
+    gsdb::breakpoint* parent, breakpoint_site::id_type id, virt_addr address,
+    bool hardware, bool internal) {
     if (breakpoint_sites_.contains_address(address)) {
         error::send("Breakpoint site already created at address " +
                     std::to_string(address.addr()));
     }
     return breakpoint_sites_.push(std::unique_ptr<breakpoint_site>(
-        new breakpoint_site(*this, address, hardware, internal)));
+        new breakpoint_site(parent, id, *this, address, hardware, internal)));
 }
 
 gsdb::stop_reason gsdb::process::step_instruction() {

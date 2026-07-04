@@ -1,17 +1,24 @@
 #ifndef GSDB_TARGET_HPP
 #define GSDB_TARGET_HPP
 
+#include <elf.h>
 #include <sys/types.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <filesystem>
 #include <libgsdb/elf.hpp>
 #include <libgsdb/process.hpp>
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "libgsdb/breakpoint.hpp"
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/stack.hpp"
+#include "libgsdb/stoppoint_collection.hpp"
 #include "libgsdb/types.hpp"
 
 namespace gsdb {
@@ -57,6 +64,31 @@ class target {
     gsdb::line_table::iterator line_entry_at_pc() const;
     gsdb::stop_reason run_until_address(virt_addr address);
 
+    struct find_functions_result {
+        std::vector<die> dwarf_functions;
+        std::vector<std::pair<const elf*, const Elf64_Sym*>> elf_functions;
+    };
+    /**
+     * Return a result that wraps the DWARF DIEs and ELF symbols found for the
+     * given name
+     */
+    find_functions_result find_functions(std::string name) const;
+
+    breakpoint& create_address_breakpoint(virt_addr address,
+                                          bool hardware = false,
+                                          bool internal = false);
+    breakpoint& create_function_breakpoint(std::string function_name,
+                                           bool hardware = false,
+                                           bool internal = false);
+    breakpoint& create_line_breakpoint(std::filesystem::path file,
+                                       std::size_t line, bool hardware = false,
+                                       bool internal = false);
+
+    stoppoint_collection<breakpoint>& breakpoints() { return breakpoints_; }
+    const stoppoint_collection<breakpoint>& breakpoints() const {
+        return breakpoints_;
+    }
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), elf_(std::move(obj)), stack_(this) {}
@@ -65,6 +97,8 @@ class target {
     std::unique_ptr<elf> elf_;
 
     stack stack_;
+
+    stoppoint_collection<breakpoint> breakpoints_;
 };
 }  // namespace gsdb
 
