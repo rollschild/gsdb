@@ -77,7 +77,7 @@ class stoppoint_collection {
     bool empty() const { return stoppoints_.empty(); }
 
    private:
-    using points_t = std::vector<std::unique_ptr<pointer_type>>;
+    using points_t = std::vector<pointer_type>;
 
     typename points_t::iterator find_by_id(typename Stoppoint::id_type id);
     typename points_t::const_iterator find_by_id(

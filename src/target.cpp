@@ -1,3 +1,4 @@
+#include <cxxabi.h>
 #include <elf.h>
 
 #include <algorithm>
@@ -260,4 +261,29 @@ gsdb::breakpoint& gsdb::target::create_line_breakpoint(
     bool internal) {
     return breakpoints_.push(std::unique_ptr<line_breakpoint>(
         new line_breakpoint(*this, file, line, hardware, internal)));
+}
+
+/**
+ * Find the function DIE containing the program counter as a file address
+ */
+std::string gsdb::target::function_name_at_address(
+    gsdb::virt_addr address) const {
+    auto file_address = address.to_file_addr(*elf_);
+    auto obj = file_address.elf_file();
+    if (!obj) return "";
+
+    auto func = obj->get_dwarf().function_containing_address(file_address);
+    if (func and func->name()) {
+        return std::string(*func->name());
+    } else if (auto elf_func = obj->get_symbol_containing_address(file_address);
+               elf_func and
+               ELF64_ST_TYPE(elf_func.value()->st_info) == STT_FUNC) {
+        // Look for the ELF symbol containing the current program counter as an
+        // offset, and if we find one that is a function symbol, demangle it and
+        // return it
+        auto elf_name = std::string{obj->get_string(elf_func.value()->st_name)};
+        return abi::__cxa_demangle(elf_name.c_str(), nullptr, nullptr, nullptr);
+    }
+
+    return "";
 }

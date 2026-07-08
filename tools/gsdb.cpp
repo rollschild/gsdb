@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <concepts>
 #include <csignal>
 #include <cstddef>
@@ -14,7 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -27,8 +30,10 @@
 #include <variant>
 #include <vector>
 
+#include "libgsdb/breakpoint.hpp"
 #include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/disassembler.hpp"
+#include "libgsdb/dwarf.hpp"
 #include "libgsdb/error.hpp"
 #include "libgsdb/parse.hpp"
 #include "libgsdb/process.hpp"
@@ -271,17 +276,19 @@ std::string get_sigtrap_info(const gsdb::process& process,
 std::string get_signal_stop_reason(const gsdb::target& target,
                                    gsdb::stop_reason reason) {
     auto& process = target.get_process();
-    std::string message =
-        std::format("stopped with signal {} at {:#x}",
-                    sigabbrev_np(reason.info), process.get_pc().addr());
+    auto pc = process.get_pc();
+    std::string message = std::format("stopped with signal {} at {:#x}",
+                                      sigabbrev_np(reason.info), pc.addr());
 
-    // pointer to the symbol corresponding to the current function
-    auto func =
-        target.get_elf().get_symbol_containing_address(process.get_pc());
-    if (func and ELF64_ST_TYPE(func.value()->st_info) == STT_FUNC) {
-        // if the symbol represents a function
-        message += std::format(
-            " ({})", target.get_elf().get_string(func.value()->st_name));
+    auto line = target.line_entry_at_pc();
+    if (line != gsdb::line_table::iterator()) {
+        auto file = line->file_entry->path.filename().string();
+        message += std::format(", {}:{}", file, line->line);
+    }
+
+    auto func_name = target.function_name_at_address(pc);
+    if (func_name != "") {
+        message += std::format(" ({})", func_name);
     }
 
     if (reason.info == SIGTRAP) {
@@ -424,7 +431,119 @@ void handle_register_command(gsdb::process& process,
     }
 }
 
-void handle_breakpoint_command(gsdb::process& process,
+void handle_breakpoint_list_command(gsdb::target& target) {
+    if (target.breakpoints().empty()) {
+        std::print("No breakpoints set!");
+    } else {
+        std::print("Current breakpoints:\n");
+        target.breakpoints().for_each([](auto& bp) {
+            if (bp.is_internal()) return;
+            std::print("{}: ", bp.id());
+            if (auto func_bp = dynamic_cast<gsdb::function_breakpoint*>(&bp)) {
+                std::print("function = {}", func_bp->function_name());
+
+            } else if (auto line_bp =
+                           dynamic_cast<gsdb::line_breakpoint*>(&bp)) {
+                std::print("file = {}, line = {}", line_bp->file().string(),
+                           line_bp->line());
+            } else if (auto addr_bp =
+                           dynamic_cast<gsdb::address_breakpoint*>(&bp)) {
+                std::print("address = {:#x}", addr_bp->address().addr());
+            }
+            std::print(", {}:\n", bp.is_enabled() ? "enabled" : "disabled");
+            bp.breakpoint_sites().for_each([&](auto& site) {
+                std::print("    .{}: address = {:#x}, {}\n", site.id(),
+                           site.address().addr(),
+                           site.is_enabled() ? "enabled" : "disabled");
+            });
+        });
+    }
+}
+
+/**
+ * - `break set <function-name>`
+ * - `break set <file>:<line>`
+ * - `break set 0x<address>`
+ */
+void handle_breakpoint_set_command(gsdb::target& target,
+                                   const std::vector<std::string>& args) {
+    bool hardware = false;
+    if (args.size() == 4) {
+        if (args[3] == "-h")
+            hardware = true;
+        else
+            gsdb::error::send("Invalid breakpoint command argument!");
+    }
+
+    if (args[2].find("0x") == 0) {
+        auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
+        if (!address) {
+            std::print(stderr,
+                       "Breakpoint command expects address in hexadecimal, "
+                       "prefixed with '0x'\n");
+            return;
+        }
+        target.create_address_breakpoint(gsdb::virt_addr{*address}, hardware)
+            .enable();
+    } else if (args[2].find(':') != std::string::npos) {
+        auto data = split(args[2], ':');
+        auto path = data[0];
+        auto line = gsdb::to_integral<std::uint64_t>(data[1]);
+        if (!line) {
+            std::print(stderr, "Line number should be an integer!\n");
+            return;
+        }
+        target.create_line_breakpoint(path, *line, hardware).enable();
+    } else {
+        target.create_function_breakpoint(args[2]).enable();
+    }
+}
+
+/**
+ * - `break enable 1` - enable all breakpoint sites for breakpoint ID 1
+ * - `break enable 1.2` - enable only breakpoint site with ID 2 inside
+ * breakpoint with ID 1
+ */
+void handle_breakpoint_toggle(gsdb::target& target,
+                              const std::vector<std::string>& args) {
+    auto command = args[1];
+
+    auto dot_pos = args[2].find('.');
+    auto id_str = args[2].substr(0, dot_pos);
+    auto id = gsdb::to_integral<gsdb::breakpoint::id_type>(id_str);
+    if (!id) {
+        std::cerr << "Command expects breakpoint ID!\n";
+        return;
+    }
+    auto& bp = target.breakpoints().get_by_id(*id);
+
+    if (dot_pos != std::string::npos) {
+        auto site_id_str = args[2].substr(dot_pos + 1);
+        auto site_id =
+            gsdb::to_integral<gsdb::breakpoint_site::id_type>(site_id_str);
+        if (!site_id) {
+            std::cerr << "Command expects breakpoint site ID!";
+            return;
+        }
+        if (is_prefix(command, "enable")) {
+            bp.breakpoint_sites().get_by_id(*site_id).enable();
+        } else if (is_prefix(command, "disable")) {
+            bp.breakpoint_sites().get_by_id(*site_id).disable();
+        }
+    } else if (is_prefix(command, "enable")) {
+        bp.enable();
+    } else if (is_prefix(command, "disable")) {
+        bp.disable();
+    } else if (is_prefix(command, "delete")) {
+        bp.breakpoint_sites().for_each([&](auto& site) {
+            target.get_process().breakpoint_sites().remove_by_address(
+                site.address());
+        });
+        target.breakpoints().remove_by_id(*id);
+    }
+}
+
+void handle_breakpoint_command(gsdb::target& target,
                                const std::vector<std::string>& args) {
     if (args.size() < 2) {
         print_help({"help", "breakpoint"});
@@ -434,17 +553,7 @@ void handle_breakpoint_command(gsdb::process& process,
     auto command = args[1];
     if (is_prefix(command, "list")) {
         // breakpoint list
-        if (process.breakpoint_sites().empty()) {
-            std::print("No breakpoints set\n");
-        } else {
-            std::print("Current breakpoints:\n");
-            process.breakpoint_sites().for_each([](auto& site) {
-                if (site.is_internal()) return;
-                std::print("{}: address = {:#x}, {}\n", site.id(),
-                           site.address().addr(),
-                           site.is_enabled() ? "enabled" : "disabled");
-            });
-        }
+        handle_breakpoint_list_command(target);
         return;
     }
 
@@ -453,40 +562,11 @@ void handle_breakpoint_command(gsdb::process& process,
         return;
     }
     if (is_prefix(command, "set")) {
-        auto address = gsdb::to_integral<std::uint64_t>(args[2], 16);
-        if (!address) {
-            std::print(stderr,
-                       "Breakpoint command expects address in hexadecimal, "
-                       "prefixed with '0x'\n");
-            return;
-        }
-
-        bool hardware = false;
-        if (args.size() == 4) {
-            if (args[3] == "-h")
-                hardware = true;
-            else
-                gsdb::error::send("Invalid breakpoint command argument!");
-        }
-
-        process.create_breakpoint_site(gsdb::virt_addr{*address}, hardware)
-            .enable();
+        handle_breakpoint_set_command(target, args);
         return;
     }
 
-    auto id = gsdb::to_integral<gsdb::breakpoint_site::id_type>(args[2]);
-    if (!id) {
-        std::cerr << "Command expects breakpoint ID!";
-        return;
-    }
-
-    if (is_prefix(command, "enable")) {
-        process.breakpoint_sites().get_by_id(*id).enable();
-    } else if (is_prefix(command, "disable")) {
-        process.breakpoint_sites().get_by_id(*id).disable();
-    } else if (is_prefix(command, "delete")) {
-        process.breakpoint_sites().remove_by_id(*id);
-    }
+    handle_breakpoint_toggle(target, args);
 }
 
 void handle_watchpoint_list(
@@ -650,11 +730,63 @@ void handle_memory_command(gsdb::process& process,
     }
 }
 
+void print_source(const std::filesystem::path& path, std::uint64_t line,
+                  std::uint64_t n_lines_context) {
+    std::ifstream file{path.string()};
+    auto start_line = line <= n_lines_context ? 1 : line - n_lines_context;
+    auto end_line = line + n_lines_context + 1;
+
+    char c{};
+    auto current_line = 1u;
+    // discard any source code that comes before the starting line we are
+    // looking for
+    while (current_line != start_line && file.get(c)) {
+        if (c == '\n') {
+            ++current_line;
+        }
+    }
+
+    auto print_line_start = [&](auto current_line) {
+        // Line numbers should all be the same width so they don't misalign
+        // the source code. "How many times can you divide this number by
+        // 10?"
+        auto fill_width =
+            static_cast<int>(std::floor(std::log10(end_line))) + 1;
+        auto arrow = current_line == line ? ">" : " ";
+        std::print("{} {:>{}} ", arrow, current_line, fill_width);
+    };
+
+    print_line_start(current_line);
+    while (current_line <= end_line && file.get(c)) {
+        std::cout << c;
+        if (c == '\n') {
+            ++current_line;
+            print_line_start(current_line);
+        }
+    }
+
+    // flush the stream with `std::endl` so it's immediately output to the
+    // console
+    std::cout << std::endl;
+}
+
 void handle_stop(gsdb::target& target, gsdb::stop_reason reason) {
     print_stop_reason(target, reason);
     if (reason.reason == gsdb::process_state::stopped) {
-        print_disassembly(target.get_process(), target.get_process().get_pc(),
-                          5);
+        if (target.get_stack().inline_height() > 0) {
+            // simulating regular function calls
+            auto stack = target.get_stack().inline_stack_at_pc();
+            auto frame =
+                stack[stack.size() - target.get_stack().inline_height()];
+            print_source(frame.file().path, frame.line(), 3);
+        } else if (auto entry = target.line_entry_at_pc();
+                   entry != gsdb::line_table::iterator()) {
+            print_source(entry->file_entry->path, entry->line, 3);
+        } else {
+            // we don't have enough information
+            print_disassembly(target.get_process(),
+                              target.get_process().get_pc(), 5);
+        }
     }
 }
 /**
@@ -741,7 +873,7 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
     } else if (is_prefix(command, "help")) {
         print_help(args);
     } else if (is_prefix(command, "breakpoint")) {
-        handle_breakpoint_command(*process, args);
+        handle_breakpoint_command(*target, args);
     } else if (is_prefix(command, "next")) {
         auto reason = target->step_over();
         handle_stop(*target, reason);

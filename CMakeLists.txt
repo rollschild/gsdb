@@ -85,6 +85,12 @@ set(${PROJECT_NAME}_INSTALL_CMAKEDIR
 
 find_package(PkgConfig REQUIRED)
 find_package(zydis CONFIG REQUIRED)
+# Work around nixpkgs zydis-4.1.1: its exported target links the bare name
+# "Zycore" instead of the imported target "Zycore::Zycore", so the linker gets a
+# dangling -lZycore. Alias the real imported target under the bare name.
+if(TARGET Zycore::Zycore AND NOT TARGET Zycore)
+  add_library(Zycore ALIAS Zycore::Zycore)
+endif()
 pkg_check_modules(libedit REQUIRED IMPORTED_TARGET libedit)
 
 if(ENABLE_TESTING)

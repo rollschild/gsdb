@@ -146,6 +146,10 @@ class process {
     /**
      * Create a breakpoint site at a give virtual address
      */
+    breakpoint_site& create_breakpoint_site(virt_addr address,
+                                            bool hardware = false,
+                                            bool internal = false);
+
     breakpoint_site& create_breakpoint_site(breakpoint* parent,
                                             breakpoint_site::id_type id,
                                             virt_addr address,
