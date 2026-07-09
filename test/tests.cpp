@@ -785,6 +785,7 @@ TEST_CASE("Source-level breakpoints", "[breakpoint]") {
     auto& bkpt = target->create_function_breakpoint("print_type");
     bkpt.enable();
 
+    // disable the breakpoint site with the lowest address
     gsdb::breakpoint_site* lowest_bkpt = nullptr;
     bkpt.breakpoint_sites().for_each([&lowest_bkpt](auto& site) {
         if (lowest_bkpt == nullptr or
@@ -808,5 +809,56 @@ TEST_CASE("Source-level breakpoints", "[breakpoint]") {
     auto reason = proc.wait_on_signal();
 
     REQUIRE(reason.reason == gsdb::process_state::exited);
+    close(dev_null);
+}
+
+TEST_CASE("Source-level stepping", "[target]") {
+    auto dev_null = open("/dev/null", O_WRONLY);
+    auto path = std::string(TARGETS_DIR) + "/step";
+    auto target = target::launch(path, dev_null);
+    auto& proc = target->get_process();
+
+    target->create_function_breakpoint("main").enable();
+    proc.resume();
+    proc.wait_on_signal();
+
+    auto pc = proc.get_pc();
+    REQUIRE(target->function_name_at_address(pc) == "main");
+
+    // step over first call to find_happiness
+    target->step_over();
+
+    auto new_pc = proc.get_pc();
+    REQUIRE(new_pc != pc);
+    // make sure still inside main
+    REQUIRE(target->function_name_at_address(pc) == "main");
+
+    // step into find_happiness
+    target->step_in();
+
+    pc = proc.get_pc();
+    REQUIRE(target->function_name_at_address(pc) == "find_happiness");
+    // we’re also at the top of the inlined pet_cat and scratch_head functions
+    REQUIRE(target->get_stack().inline_height() == 2);
+
+    target->step_in();
+
+    new_pc = proc.get_pc();
+    REQUIRE(new_pc == pc);
+    // step into pet_cat
+    // inline height has gone down
+    REQUIRE(target->get_stack().inline_height() == 1);
+
+    target->step_out();
+
+    new_pc = proc.get_pc();
+    REQUIRE(new_pc != pc);
+    REQUIRE(target->function_name_at_address(pc) == "find_happiness");
+
+    target->step_out();
+
+    pc = proc.get_pc();
+    REQUIRE(target->function_name_at_address(pc) == "main");
+
     close(dev_null);
 }
