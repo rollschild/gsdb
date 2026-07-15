@@ -615,3 +615,35 @@ The **frame base** for a stack frame is the memory address directly after the st
 
 ![Simplified x64 stack with base pointers](stack_with_rbp.jpg)
 _Figure 3: Simplified x64 stack with base pointers_
+
+### Call Frame Information
+
+**backtrace**
+
+Generate backtrace by unwinding the function call stack:
+
+- Find the current function's return address
+- locate the function to which this address belongs
+- Find return address of that function...
+
+#### DWARF Call Frame Information
+
+Call stack includes a frame to represent each function call.
+
+To unwind a single frame of the stack, we must know how to locate the **canonical frame address (CFA)**, which is a specific point in the stack frame that we use as the base address for other computations.
+
+We must also know where the return address is stored and how to restore any registers whose values were saved onto the stack as part of the callee’s function prologue.
+
+The call frame information contains **frame description entries (FDEs)**.
+
+**common information entries (CIEs)**
+
+Together, CIEs and FDEs encode a series of call frame information instructions that describe how to compute rows of the huge table of DWARF call frame information.
+
+#### Looking Up Frame Description Entries
+
+A section in the ELF file called `.eh_frame_hdr` contains a fast lookup table for FDEs.
+
+By parsing this section, we can perform a binary search on the `initial_location` value to locate the FDE that corresponds to a given instruction.
+
+The `.eh_frame_hdr` section contains a binary search table that maps addresses to offsets of the FDEs that store the corresponding unwind information.

@@ -21,6 +21,7 @@
 #include "libgsdb/types.hpp"
 
 namespace {
+
 /**
  * The cursor will handle the parsing of the data and advance the location being
  * pointed to
@@ -192,6 +193,208 @@ class cursor {
     gsdb::span<const std::byte> data_;
     const std::byte* pos_;
 };
+
+std::uint64_t parse_eh_frame_pointer_with_base(cursor& cur,
+                                               std::uint8_t encoding,
+                                               std::uint64_t base) {
+    // the least significant 4 bits of the encoding byte tell us how to
+    // interpret the pointer
+    switch (encoding & 0x0f) {
+        case DW_EH_PE_absptr:
+            return base + cur.u64();
+        case DW_EH_PE_uleb128:
+            return base + cur.uleb128();
+        case DW_EH_PE_udata2:
+            return base + cur.u16();
+        case DW_EH_PE_udata4:
+            return base + cur.u32();
+        case DW_EH_PE_udata8:
+            return base + cur.u64();
+        case DW_EH_PE_sleb128:
+            return base + cur.sleb128();
+        case DW_EH_PE_sdata2:
+            return base + cur.s16();
+        case DW_EH_PE_sdata4:
+            return base + cur.s32();
+        case DW_EH_PE_sdata8:
+            return base + cur.s64();
+        default:
+            gsdb::error::send("Unknown eh_frame pointer encoding!");
+    }
+}
+
+std::uint64_t parse_eh_frame_pointer([[maybe_unused]] const gsdb::elf& elf,
+                                     cursor& cur, std::uint8_t encoding,
+                                     std::uint64_t pc,
+                                     std::uint64_t text_section_start,
+                                     std::uint64_t data_section_start,
+                                     std::uint64_t func_start) {
+    std::uint64_t base = 0;
+    // Mask out the most significant bit (0x80) because it corresponds to the
+    // indirect encoding scheme, which we don’t need to handle.
+    switch (encoding & 0x70) {
+        case DW_EH_PE_absptr:
+            // If the pointer is absolute, the base address is 0.
+            break;
+        case DW_EH_PE_pcrel:
+            base = pc;
+            break;
+        case DW_EH_PE_textrel:
+            base = text_section_start;
+            break;
+        case DW_EH_PE_datarel:
+            base = data_section_start;
+            break;
+        case DW_EH_PE_funcrel:
+            base = func_start;
+            break;
+        default:
+            gsdb::error::send("Unknown eh_frame pointer encoding!");
+    }
+
+    return parse_eh_frame_pointer_with_base(cur, encoding, base);
+}
+
+/**
+ * Parse a single CIE at a given cursor position
+ */
+gsdb::call_frame_information::common_information_entry parse_cie(cursor cur) {
+    auto start = cur.position();
+    // len field does _NOT_ include its own size
+    auto len = cur.u32() + 4;
+    /* auto id = */ cur.u32();
+    auto version = cur.u8();
+
+    if (!(version == 1 or version == 3 or version == 4)) {
+        gsdb::error::send("Invalid CIE version!");
+    }
+    auto augmentation = cur.string();
+    if (!augmentation.empty() and augmentation[0] != 'z') {
+        gsdb::error::send("Invalid CIE augmentation!");
+    }
+
+    if (version == 4) {
+        auto address_size = cur.u8();
+        auto segment_size = cur.u8();
+        if (address_size != 8) {
+            gsdb::error::send("Invalid address size!");
+        }
+        if (segment_size != 0) {
+            gsdb::error::send("Invalid segment size!");
+        }
+    }
+
+    auto code_alignment_factor = cur.uleb128();
+    auto data_alignment_factor = cur.sleb128();
+    [[maybe_unused]] auto return_address_register =
+        version == 1 ? cur.u8() : cur.uleb128();
+
+    std::uint8_t fde_pointer_encoding = DW_EH_PE_udata8 | DW_EH_PE_absptr;
+    for (auto c : augmentation) {
+        switch (c) {
+            case 'z':
+                cur.uleb128();
+                break;
+            case 'R':
+                fde_pointer_encoding = cur.u8();
+                break;
+            case 'L':
+                cur.u8();
+                break;
+            case 'P': {
+                auto encoding = cur.u8();
+                (void)parse_eh_frame_pointer_with_base(cur, encoding, 0);
+                break;
+            }
+            default:
+                gsdb::error::send("Invalid CIE augmentation!");
+        }
+    }
+
+    gsdb::span<const std::byte> instructions = {cur.position(), start + len};
+    bool fde_has_augmentation = !augmentation.empty();
+    return {len,
+            code_alignment_factor,
+            data_alignment_factor,
+            fde_has_augmentation,
+            fde_pointer_encoding,
+            instructions};
+}
+
+[[maybe_unused]]
+gsdb::call_frame_information::frame_description_entry parse_fde(
+    const gsdb::call_frame_information& cfi, cursor cur) {
+    auto start = cur.position();
+    auto len = cur.u32() + 4;
+
+    // retrieve elf object to which this call frame information belongs
+    auto elf = cfi.dwarf_info().elf_file();
+    // convert the current cursor position into a file offset
+    auto current_offset = elf->data_pointer_as_file_offset(cur.position());
+    // parse the distance to the linked CIE and subtract it from the current
+    // cursor offset to get the offset of the linked CIE from start of the
+    // object file
+    gsdb::file_offset cie_offset{*elf, current_offset.off() - cur.s32()};
+    auto& cie = cfi.get_cie(cie_offset);
+
+    current_offset = elf->data_pointer_as_file_offset(cur.position());
+    auto text_section_start =
+        elf->get_section_start_address(".text").value_or(gsdb::file_addr{});
+    auto initial_location_addr = parse_eh_frame_pointer(
+        *elf, cur, cie.fde_pointer_encoding, current_offset.off(),
+        text_section_start.addr(), 0, 0);
+    gsdb::file_addr initial_location{*elf, initial_location_addr};
+
+    auto address_range =
+        parse_eh_frame_pointer_with_base(cur, cie.fde_pointer_encoding, 0);
+    if (cie.fde_has_augmentaion) {
+        auto augmentation_len = cur.uleb128();
+        cur += augmentation_len;
+    }
+    gsdb::span<const std::byte> instructions = {cur.position(), start + len};
+    return {len, &cie, initial_location, address_range, instructions};
+}
+
+gsdb::call_frame_information::eh_hdr parse_eh_hdr(gsdb::dwarf& dwarf) {
+    auto elf = dwarf.elf_file();
+    [[maybe_unused]] auto eh_hdr_start =
+        *elf->get_section_start_address(".eh_frame_hdr");
+    [[maybe_unused]] auto text_section_start =
+        *elf->get_section_start_address(".text");
+
+    auto eh_hdr_data = elf->get_section_contents(".eh_frame_hdr");
+    cursor cur(eh_hdr_data);
+
+    auto start = cur.position();
+    [[maybe_unused]] auto version = cur.u8();
+    auto eh_frame_ptr_enc = cur.u8();
+    auto fde_count_enc = cur.u8();
+    auto table_enc = cur.u8();
+    (void)parse_eh_frame_pointer_with_base(cur, eh_frame_ptr_enc, 0);
+
+    auto fde_count = parse_eh_frame_pointer_with_base(cur, fde_count_enc, 0);
+
+    auto search_table = cur.position();
+    return {start, search_table, fde_count, table_enc, nullptr};
+}
+
+/**
+ * Get the byte size for a given encoding scheme
+ */
+std::size_t eh_frame_pointer_encoding_size(std::uint8_t encoding) {
+    switch (encoding & 0x7) {
+        case DW_EH_PE_absptr:
+            return 8;
+        case DW_EH_PE_udata2:
+            return 2;
+        case DW_EH_PE_udata4:
+            return 4;
+        case DW_EH_PE_udata8:
+            return 8;
+        default:
+            gsdb::error::send("Invalid pointer encoding!");
+    }
+}
 
 std::unordered_map<std::uint64_t, gsdb::abbrev> parse_abbrev_table(
     const gsdb::elf& obj, std::size_t offset) {
@@ -414,10 +617,20 @@ bool path_ends_in(const std::filesystem::path& lhs,
     return std::equal(start, lhs.end(), rhs.begin());
 }
 
+/**
+ * Parse the `.eh_frame_hdr` section
+ */
+std::unique_ptr<gsdb::call_frame_information> parse_call_frame_information(
+    gsdb::dwarf& dwarf) {
+    auto eh_hdr = parse_eh_hdr(dwarf);
+    return std::make_unique<gsdb::call_frame_information>(&dwarf, eh_hdr);
+}
+
 }  // namespace
 
 gsdb::dwarf::dwarf(const gsdb::elf& parent) : elf_(&parent) {
     compile_units_ = parse_compile_units(*this, parent);
+    cfi_ = parse_call_frame_information(*this);
 }
 
 const std::unordered_map<std::uint64_t, gsdb::abbrev>&
@@ -1112,4 +1325,75 @@ std::vector<gsdb::die> gsdb::dwarf::inline_stack_at_address(
     }
 
     return stack;
+}
+
+const gsdb::call_frame_information::common_information_entry&
+gsdb::call_frame_information::get_cie(gsdb::file_offset at) const {
+    auto offset = at.off();
+    // Look up the given offset in the CIE cache.
+    if (cie_map_.count(offset)) {
+        // If we've already parsed this CIE, return it
+        return cie_map_.at(offset);
+    }
+
+    auto section = at.elf_file()->get_section_contents(".eh_frame");
+    // Construct a cursor from the specified offset into the ELF file up to the
+    // end of the `.eh_frame` section
+    cursor cur({at.elf_file()->file_offset_as_data_pointer(at), section.end()});
+    auto cie = parse_cie(cur);
+    cie_map_.emplace(offset, cie);
+    return cie_map_.at(offset);
+}
+
+/**
+ * Binary search
+ */
+const std::byte* gsdb::call_frame_information::eh_hdr::operator[](
+    file_addr address) const {
+    auto elf = address.elf_file();
+    // used for decoding pointers
+    auto text_section_start = *elf->get_section_start_address(".text");
+    auto encoding_size = eh_frame_pointer_encoding_size(encoding);
+    // Each row of the table stores two values, so the row size is twice the
+    // size of the pointer encoding.
+    auto row_size = encoding_size * 2;
+
+    std::size_t low = 0;
+    std::size_t high = count - 1;
+    while (low <= high) {
+        std::size_t mid = (low + high) / 2;
+        cursor cur(
+            {search_table + mid * row_size, search_table + count * row_size});
+        auto current_offset = elf->data_pointer_as_file_offset(cur.position());
+        auto eh_hdr_offset = elf->data_pointer_as_file_offset(start);
+        auto entry_address = parse_eh_frame_pointer(
+            *elf, cur, encoding,
+            current_offset.off() /* as the program counter value */,
+            text_section_start.addr(), eh_hdr_offset.off(), 0);
+
+        if (entry_address < address.addr()) {
+            low = mid + 1;
+        } else if (entry_address > address.addr()) {
+            if (mid == 0) {
+                gsdb::error::send("Address not found in eh_hdr!");
+            }
+            high = mid - 1;
+        } else {
+            high = mid;
+            break;
+        }
+    }
+
+    // `search_table + high * row_size` gives us a pointer to the start of the
+    // desired entry; adding `encoding_size` skips over the `initial_address`
+    // value, resulting in a pointer to the encoded FDE pointer
+    cursor cur({search_table + high * row_size + encoding_size,
+                search_table + count * row_size});
+    auto current_offset = elf->data_pointer_as_file_offset(cur.position());
+    auto eh_hdr_offset = elf->data_pointer_as_file_offset(start);
+    auto fde_offset_int = parse_eh_frame_pointer(
+        *elf, cur, encoding, current_offset.off(), text_section_start.addr(),
+        eh_hdr_offset.off(), 0);
+    gsdb::file_offset fde_offset{*elf, fde_offset_int};
+    return elf->file_offset_as_data_pointer(fde_offset);
 }

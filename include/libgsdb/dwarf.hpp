@@ -23,6 +23,63 @@ class elf;
 class dwarf;
 class die;
 
+class call_frame_information {
+   public:
+    struct common_information_entry {
+        std::uint32_t length;
+        std::uint64_t code_alignment_factor;
+        std::int64_t data_alignment_factor;
+        bool fde_has_augmentaion;
+        std::uint8_t fde_pointer_encoding;
+        span<const std::byte> instructions;
+    };
+    struct frame_description_entry {
+        std::uint32_t length;
+        const common_information_entry* cie;
+        file_addr initial_location;
+        std::uint64_t address_range;
+        span<const std::byte> instructions;
+    };
+    struct eh_hdr {
+        // pointer to the start of the `.eh_frame_hdr` section
+        const std::byte* start;
+        // pointer to start of the search table
+        const std::byte* search_table;
+        const std::size_t count;
+        std::uint8_t encoding;
+        call_frame_information* parent;
+
+        /**
+         * Takes an instruction's object file offset and returns a pointer to
+         * the start of the FDE for that instruction
+         */
+        const std::byte* operator[](file_addr address) const;
+    };
+
+    call_frame_information() = delete;
+    call_frame_information(const call_frame_information&) = delete;
+    call_frame_information& operator=(const call_frame_information&) = delete;
+
+    const dwarf& dwarf_info() const { return *dwarf_; }
+
+    const common_information_entry& get_cie(file_offset at) const;
+
+    call_frame_information(const dwarf* dwarf, eh_hdr hdr)
+        : dwarf_(dwarf), eh_hdr_(hdr) {
+        eh_hdr_.parent = this;
+    }
+
+   private:
+    const dwarf* dwarf_;
+    // FDEs reference CIEs by their offset in the object file.
+    // When parsing an FDE, we’ll need to be able to quickly retrieve a CIE from
+    // this offset.
+    // `mutable` because it's used as a cache
+    mutable std::unordered_map<std::uint32_t, common_information_entry>
+        cie_map_;
+    eh_hdr eh_hdr_;
+};
+
 class range_list {
    public:
     range_list(const compile_unit* cu, span<const std::byte> data,
@@ -312,6 +369,8 @@ class dwarf {
      */
     std::vector<die> inline_stack_at_address(file_addr address) const;
 
+    const call_frame_information& cfi() const { return *cfi_; }
+
    private:
     const elf* elf_;
 
@@ -342,6 +401,8 @@ class dwarf {
     // read-only; mutable carves out an exception for this one
     // field.
     mutable std::unordered_multimap<std::string, index_entry> function_index_;
+
+    std::unique_ptr<call_frame_information> cfi_;
 };
 
 struct source_location {
