@@ -647,3 +647,11 @@ A section in the ELF file called `.eh_frame_hdr` contains a fast lookup table fo
 By parsing this section, we can perform a binary search on the `initial_location` value to locate the FDE that corresponds to a given instruction.
 
 The `.eh_frame_hdr` section contains a binary search table that maps addresses to offsets of the FDEs that store the corresponding unwind information.
+
+### Stack Unwinding
+
+#### Executing Call Frame Information
+
+DWARF call frame information essentially specifies a huge table. Each row of the table lists a program counter value.
+
+The rules in that row tell you how to unwind the current stack frame when the program counter has a value in the noninclusive range between that address and the program counter value in the next table row (or the end of the range represented by the matching FDE, in the case of the last row in the table).
