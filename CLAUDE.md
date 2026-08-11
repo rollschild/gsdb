@@ -152,3 +152,4 @@ Clangd may report spurious errors like `no type named '_Tp_alloc_type'` in `std:
 - Compiler flags: `-Wall -Wfatal-errors -Wextra -Werror -g -O1` (warnings are errors)
 - Resource-owning types use private constructors with `friend` access (see `process`, `registers`, `breakpoint_site`)
 - Copy operations are deleted on resource types; move may be allowed where appropriate
+- **Assembly is AT&T syntax, always** — in `.s` target sources (GAS default), in code comments, in `CLAUDE.md`, and in any explanation or discussion of x86-64 instructions. Never use Intel syntax. AT&T means `mnemonic src, dst` with a size suffix (`b`/`w`/`l`/`q`), `%` on registers, `$` on immediates, `disp(base, index, scale)` for memory: write `movl $1, %eax` (not `mov eax, 1`), `movq 8(%rbx), %rax` (not `mov rax, [rbx+8]`). This matches the disassembler, which calls `ZydisDisassembleATT`, so REPL output and documentation stay in one syntax.

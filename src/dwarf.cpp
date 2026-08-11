@@ -14,6 +14,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "libgsdb/elf.hpp"
@@ -625,6 +626,39 @@ std::unique_ptr<gsdb::call_frame_information> parse_call_frame_information(
     auto eh_hdr = parse_eh_hdr(dwarf);
     return std::make_unique<gsdb::call_frame_information>(&dwarf, eh_hdr);
 }
+
+/**
+ * Rules for restoring a register
+ */
+struct undefined_rule {};
+struct same_rule {};
+struct offset_rule {
+    std::int64_t offset;
+};
+struct val_offset_rule {
+    std::int64_t offset;
+};
+struct register_rule {
+    std::uint32_t reg;
+};
+struct cfa_register_rule {
+    std::uint32_t reg;
+    std::int64_t offset;
+};
+
+struct unwind_context {
+    cursor cur{{nullptr, nullptr}};
+    gsdb::file_addr location;
+    cfa_register_rule cfa_rule;
+
+    using rule = std::variant<undefined_rule, same_rule, offset_rule,
+                              val_offset_rule, register_rule>;
+    // mapping from DWARF register numbers to register restore rules
+    using ruleset = std::unordered_map<std::uint32_t, rule>;
+    ruleset cie_register_rules;
+    ruleset register_rules;
+    std::vector<std::pair<ruleset, cfa_register_rule>> rule_stack;
+};
 
 }  // namespace
 
