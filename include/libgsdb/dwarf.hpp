@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "libgsdb/process.hpp"
+#include "libgsdb/registers.hpp"
 #include "libgsdb/types.hpp"
 
 namespace gsdb {
@@ -68,6 +70,16 @@ class call_frame_information {
         : dwarf_(dwarf), eh_hdr_(hdr) {
         eh_hdr_.parent = this;
     }
+
+    /**
+     * Find the FDE for the given program counter value, and execute its call
+     * frame information instructions until it produces the table row
+     * corresponding to the program counter.
+     *
+     * Returns a new set of registers that represents the machine state for the
+     * caller.
+     */
+    registers unwind(const process& proc, file_addr pc, registers& regs) const;
 
    private:
     const dwarf* dwarf_;

@@ -69,11 +69,14 @@ gsdb::file_addr gsdb::target::get_pc_file_address() const {
 }
 
 /**
- * Everyt time the process halts, recalculate the inline height
+ * Everyt time the process halts, recalculate the inline height.
+ * Call this function every time the process stops and that it should recompute
+ * the current set of stack frames.
  */
 void gsdb::target::notify_stop(
     [[maybe_unused]] const gsdb::stop_reason& reason) {
-    stack_.reset_inline_height();
+    // stack_.reset_inline_height();
+    stack_.unwind();
 }
 
 gsdb::stop_reason gsdb::target::step_in() {

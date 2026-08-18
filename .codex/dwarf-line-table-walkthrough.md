@@ -526,24 +526,29 @@ flowchart LR
 These are implementation details worth keeping in mind before extending source
 breakpoints or stepping.
 
-### `die::contains()` Is Currently Suspicious
+### `die::contains()` Used Assignment Instead Of Comparison (fixed)
 
-The predicate in `die::contains()` uses assignment:
+The predicate in `die::contains()` used assignment:
 
 ```cpp
 return spec.attr = attribute;
 ```
 
-It should almost certainly be comparison:
+Because the lambda received `spec` by value, this did not mutate the stored
+abbreviation table, but it meant `contains(nonzero_attribute)` returned true for
+the first attribute in any non-empty DIE — affecting line-table setup,
+compile-unit address checks, and function indexing.
+
+It now compares (`src/dwarf.cpp:954`):
 
 ```cpp
-return spec.attr == attribute;
+bool gsdb::die::contains(std::uint64_t attribute) const {
+    auto& specs = abbrev_->attr_specs;
+    return std::find_if(std::begin(specs), std::end(specs), [=](auto spec) {
+               return spec.attr == attribute;
+           }) != std::end(specs);
+}
 ```
-
-Because the lambda receives `spec` by value, this does not mutate the stored
-abbreviation table, but it means `contains(nonzero_attribute)` returns true for
-the first attribute in any non-empty DIE. That can affect line-table setup,
-compile-unit address checks, and function indexing.
 
 ### `DW_LNS_set_isa` Does Not Consume Its Operand
 
@@ -632,8 +637,9 @@ flowchart TD
 
 Before building on this heavily, the likely cleanup order is:
 
-1. Fix `die::contains()`.
-2. Make `DW_LNS_set_isa` consume its operand.
+1. ~~Fix `die::contains()`.~~ Done — see above.
+2. Make `DW_LNS_set_isa` consume its operand (`src/dwarf.cpp:1415` still just
+   `break`s).
 3. Filter `end_sequence` in source-line lookup.
 4. Decide whether `line_table` should materialize rows or keep lazy iteration.
 5. If keeping lazy iteration, avoid long-lived `file_entry` pointers that can be

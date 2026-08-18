@@ -409,10 +409,11 @@ directly, so no adjustment is applied.
 |---|---|
 | `get_pc()` / `set_pc()` wrappers over `%rip` | `include/libgsdb/process.hpp:129,137` |
 | Register table with DWARF numbers `rbp=6`, `rsp=7`, `rip=16` | `include/libgsdb/detail/registers.inc:34,35,44` |
-| `%rbp`-chain unwind to find the return address | `src/target.cpp:220-226` (`target::step_out`) |
+| `%rbp`-chain unwind to find the return address | `src/target.cpp:223-229` (`target::step_out`) |
 | `int3` PC rewind | `src/process.cpp:196-203` |
 | Long-form explanation of the rewind | `src/breakpoint_site.cpp:45-58` |
-| CIE / FDE / `.eh_frame_hdr` structures for CFI | `include/libgsdb/dwarf.hpp:25-80` |
+| CIE / FDE / `.eh_frame_hdr` structures for CFI | `include/libgsdb/dwarf.hpp:28-93` |
+| CFI unwind producing the caller's registers | `include/libgsdb/dwarf.hpp:82` (`call_frame_information::unwind`), `src/stack.cpp:57` (`stack::unwind`) |
 | PC as a `file_addr` (bias-adjusted for DWARF lookup) | `src/target.cpp:67` |
 
 Related notes: `x86-64-sub-registers.md`, `step_out-walkthrough.md`,

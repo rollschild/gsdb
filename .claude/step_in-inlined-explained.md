@@ -1,12 +1,12 @@
 # `target::step_in()` — the inlined-frame fast path explained
 
-Location: `src/target.cpp:74` (the early `if` block at lines 76–80)
+Location: `src/target.cpp:82` (the early `if` block at lines 84–88)
 
 ```cpp
 gsdb::stop_reason gsdb::target::step_in() {
     auto& stack = get_stack();
     if (stack.inline_height() > 0) {
-        stack.simulate_inlined_step_in();   // just: --inline_height_
+        stack.simulate_inlined_step_in();   // --inline_height_, then resync current_frame_
         return stop_reason(process_state::stopped, SIGTRAP,
                            trap_type::single_step);
     }
@@ -14,10 +14,14 @@ gsdb::stop_reason gsdb::target::step_in() {
 }
 ```
 
-And `simulate_inlined_step_in()` (`include/libgsdb/stack.hpp:26`) is literally:
+And `simulate_inlined_step_in()` (`include/libgsdb/stack.hpp:39`) is just the
+decrement plus a resync of the frame cursor:
 
 ```cpp
-void simulate_inlined_step_in() { --inline_height_; }
+void simulate_inlined_step_in() {
+    --inline_height_;
+    current_frame_ = inline_height_;
+}
 ```
 
 ## The setup
@@ -73,7 +77,7 @@ That's why it returns immediately with a synthetic `single_step` stop reason and
      │     return single_step  ───────────►   user now "inside" baz() (deepest)
      │
   step_in()  again, inline_height_ = 0
-     │     falls through to the REAL stepping logic below (line 82+)
+     │     falls through to the REAL stepping logic below (line 90+)
      │     actually single-steps machine instructions
 ```
 

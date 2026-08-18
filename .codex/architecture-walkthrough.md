@@ -79,33 +79,61 @@ gsdb/
 
   include/libgsdb/
     process.hpp                 public process API
+    target.hpp                  owns a process plus its loaded elf
+    stack.hpp                   stack_frame, inline height, CFI unwind driver
     registers.hpp               register cache and typed access API
     register_info.hpp           register metadata lookup helpers
     detail/registers.inc        X-macro register table
-    breakpoint_site.hpp         one software breakpoint site
+    detail/dwarf.h              raw DW_* constant enums
+    breakpoint.hpp              address/function/line breakpoint objects
+    breakpoint_site.hpp         one software or hardware breakpoint site
+    watchpoint.hpp              hardware watchpoint
     stoppoint_collection.hpp    generic container for breakpoints/watchpoints
+    disassembler.hpp            Zydis wrapper
+    elf.hpp                     mmap'd ELF parser and symbol tables
+    dwarf.hpp                   DWARF parser, line table, CFI
+    syscalls.hpp                syscall name/id mapping
     pipe.hpp                    small RAII pipe wrapper
     parse.hpp                   CLI value parsing helpers
     bit.hpp                     byte conversion helpers
-    types.hpp                   virt_addr, byte64, byte128
+    types.hpp                   virt_addr, file_addr, file_offset, span,
+                                byte64, byte128, stoppoint_mode
     error.hpp                   exception type
 
   src/
     process.cpp                 ptrace lifecycle, wait, resume, attach, launch
+    target.cpp                  process+elf coordinator, source-level stepping
+    stack.cpp                   inline stack, frame list, unwind
     registers.cpp               read/write logic for GPR/FPR/debug registers
+    breakpoint.cpp              breakpoint resolution to sites
     breakpoint_site.cpp         patch/unpatch int3 breakpoint bytes
+    watchpoint.cpp              hardware watchpoint slots and value tracking
+    disassembler.cpp            Zydis decode from inferior memory
+    elf.cpp                     ELF header/section/symbol parsing
+    dwarf.cpp                   DIEs, abbrevs, line table, ranges, CFI
+    types.cpp                   address-type conversions
+    syscalls.cpp                syscall table lookups
     pipe.cpp                    pipe2/read/write/close wrapper
+    include/syscalls.inc        private X-macro syscall table
 
   tools/
     gsdb.cpp                    libedit REPL and command dispatch
 
   test/
     CMakeLists.txt              Catch2 executable and CTest discovery
-    tests.cpp                   Catch2 tests for process/register/breakpoint
+    tests.cpp                   Catch2 tests for process/register/breakpoint/
+                                memory/watchpoint/syscall/elf/dwarf/target
     targets/
       CMakeLists.txt            debuggee target builders
       *.cpp, *.s                small tracee binaries
 ```
+
+> **Scope note.** Sections 4–11 below describe the `process`-centred core as it
+> stood before the ELF, DWARF, `target`, and `stack` layers landed. They are
+> still accurate about that core, but `process` is no longer the whole spine —
+> `target` now owns a `process` plus its `elf`, and drives source-level stepping.
+> See `.codex/elf-support-walkthrough.md` and
+> `.codex/dwarf-line-table-walkthrough.md` for those layers.
 
 ## 3. Build and Link Shape
 
@@ -463,11 +491,14 @@ The CLI is intentionally thin. It parses simple prefix commands and delegates to
 the library:
 
 - `continue` calls `process::resume()` and then `wait_on_signal()`.
-- `step` calls `process::step_instruction()`.
+- `stepi` calls `process::step_instruction()`; `step`, `next`, and `finish` call
+  the source-level `target::step_in()` / `step_over()` / `step_out()`.
 - `register read` formats cached register values.
 - `register write` parses text and calls `registers::write()`.
 - `breakpoint set` creates and enables a `breakpoint_site`.
 - breakpoint id commands operate through `stoppoint_collection`.
+- `watchpoint`, `memory`, `disassemble`, and `catchpoint` were added after this
+  section was written and follow the same thin-dispatch shape.
 
 ## 10. Test Architecture
 
@@ -541,10 +572,9 @@ ctest --test-dir build
 ```
 
 `catch_discover_tests(tests)` registers each Catch2 `TEST_CASE` as a separate
-CTest test. At this point, `ctest --test-dir build -N` lists 16 tests: process
-lifecycle cases, register read/write cases, breakpoint hit/lookup/removal cases,
-and collection behavior cases for size, emptiness, iteration, and missing
-removals.
+CTest test. `test/tests.cpp` now holds 29 `TEST_CASE`s: process lifecycle,
+register read/write, breakpoint hit/lookup/removal and collection behavior, plus
+memory, watchpoint, syscall/catchpoint, ELF, DWARF, and target cases.
 
 ## 11. Mental Model
 

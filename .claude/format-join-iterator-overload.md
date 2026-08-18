@@ -2,25 +2,34 @@
 
 ## Location
 
-`tools/gsdb.cpp`, after the existing `format_join` at line 127.
+`tools/gsdb.cpp`, the `format_join` overloads at lines 180 and 208.
 
 ## Change
 
 Add an iterator-based overload and refactor the existing range overload to delegate to it.
 
-### New iterator-based overload (insert at line 127, before existing overload)
+### New iterator-based overload (applied at `tools/gsdb.cpp:180`, before the range overload)
+
+The applied version also takes a `byte_fmt` format-spec parameter (so callers such
+as the `memory read` handler can ask for `"{:02x}"`), which means it formats via
+`std::vformat_to` rather than `std::format_to`:
 
 ```cpp
 template <std::input_iterator It, std::sentinel_for<It> S>
-std::string format_join(It first, S last, std::string_view separator) {
+std::string format_join(It first, S last, std::string_view separator,
+                        std::string_view byte_fmt = "{:#04x}") {
     std::string res;
     std::string_view sep = "";
     for (; first != last; ++first) {
+        res += sep;
         if constexpr (std::same_as<std::iter_value_t<It>, std::byte>) {
-            std::format_to(std::back_inserter(res), "{}{:#04x}", sep,
-                           std::to_integer<std::uint8_t>(*first));
+            auto val = std::to_integer<std::uint8_t>(*first);
+            std::vformat_to(std::back_inserter(res), byte_fmt,
+                            std::make_format_args(val));
         } else {
-            std::format_to(std::back_inserter(res), "{}{}", sep, *first);
+            const auto& val = *first;
+            std::vformat_to(std::back_inserter(res), byte_fmt,
+                            std::make_format_args(val));
         }
         sep = separator;
     }
@@ -28,7 +37,7 @@ std::string format_join(It first, S last, std::string_view separator) {
 }
 ```
 
-### Simplified range overload (replaces existing lines 127-143)
+### Simplified range overload (applied at `tools/gsdb.cpp:206-223`; the old body is kept commented out)
 
 ```cpp
 template <std::ranges::range T>

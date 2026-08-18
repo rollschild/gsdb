@@ -19,6 +19,9 @@
 
 #include "libgsdb/elf.hpp"
 #include "libgsdb/error.hpp"
+#include "libgsdb/process.hpp"
+#include "libgsdb/register_info.hpp"
+#include "libgsdb/registers.hpp"
 #include "libgsdb/types.hpp"
 
 namespace {
@@ -646,6 +649,10 @@ struct cfa_register_rule {
     std::int64_t offset;
 };
 
+/**
+ *  One row of a conceptual table: "at address L, register R can be recovered by
+ * rule X".
+ */
 struct unwind_context {
     cursor cur{{nullptr, nullptr}};
     gsdb::file_addr location;
@@ -659,6 +666,197 @@ struct unwind_context {
     ruleset register_rules;
     std::vector<std::pair<ruleset, cfa_register_rule>> rule_stack;
 };
+
+void execute_cfi_instruction(
+    const gsdb::elf& elf,
+    const gsdb::call_frame_information::frame_description_entry& fde,
+    unwind_context& ctx, [[maybe_unused]] gsdb::file_addr pc) {
+    auto& cie = *fde.cie;
+    auto& cur = ctx.cur;
+
+    auto text_section_start = *elf.get_section_start_address(".text");
+    // file address of the start of the `.got.plt` section
+    auto plt_start =
+        elf.get_section_start_address(".got.plt").value_or(gsdb::file_addr{});
+
+    auto opcode = cur.u8();
+    auto primary_opcode = opcode & 0xc0;
+    // Refer to operands encoded in the least significant 6 bits of the opcode
+    auto extended_opcode = opcode & 0x3f;
+    if (primary_opcode) {
+        // If primary_opcode is not 0, we need to execute one of the three
+        // instructions
+        switch (primary_opcode) {
+            // Advances the current location by the value encoded in the leaset
+            // significant 6 bits of the opcode, multiplied by the
+            // `code_alignment_factor`
+            case DW_CFA_advance_loc:
+                ctx.location += extended_opcode * cie.code_alignment_factor;
+                break;
+            case DW_CFA_offset: {
+                auto offset = static_cast<std::int64_t>(cur.uleb128()) *
+                              cie.data_alignment_factor;
+                ctx.register_rules.emplace(extended_opcode,
+                                           offset_rule{offset});
+                break;
+            }
+            case DW_CFA_restore:
+                ctx.register_rules.emplace(
+                    extended_opcode,
+                    ctx.cie_register_rules.at(extended_opcode));
+                break;
+        }
+    } else if (extended_opcode) {
+        switch (extended_opcode) {
+            case DW_CFA_set_loc: {
+                auto current_offset =
+                    elf.data_pointer_as_file_offset(cur.position());
+                auto loc = parse_eh_frame_pointer(
+                    elf, cur, cie.fde_pointer_encoding, current_offset.off(),
+                    text_section_start.addr(), plt_start.addr(),
+                    fde.initial_location.addr());
+                ctx.location = gsdb::file_addr{elf, loc};
+                break;
+            }
+            case DW_CFA_advance_loc1:
+                ctx.location += cur.u8() * cie.code_alignment_factor;
+                break;
+            case DW_CFA_advance_loc2:
+                ctx.location += cur.u16() * cie.code_alignment_factor;
+                break;
+            case DW_CFA_advance_loc4:
+                ctx.location += cur.u32() * cie.code_alignment_factor;
+                break;
+            case DW_CFA_def_cfa:
+                ctx.cfa_rule.reg = cur.uleb128();
+                ctx.cfa_rule.offset = cur.uleb128();
+                break;
+            case DW_CFA_def_cfa_sf:
+                ctx.cfa_rule.reg = cur.uleb128();
+                ctx.cfa_rule.offset = cur.sleb128() * cie.data_alignment_factor;
+                break;
+            case DW_CFA_def_cfa_register:
+                ctx.cfa_rule.reg = cur.uleb128();
+                break;
+            case DW_CFA_def_cfa_offset:
+                ctx.cfa_rule.offset = cur.uleb128();
+                break;
+            case DW_CFA_def_cfa_offset_sf:
+                ctx.cfa_rule.offset = cur.sleb128() * cie.data_alignment_factor;
+                break;
+            case DW_CFA_def_cfa_expression:
+                gsdb::error::send("DWARF expressions not yet implemented!");
+            case DW_CFA_undefined:
+                ctx.register_rules.emplace(cur.uleb128(), undefined_rule{});
+                break;
+            case DW_CFA_same_value:
+                ctx.register_rules.emplace(cur.uleb128(), same_rule{});
+                break;
+            case DW_CFA_offset_extended: {
+                auto reg = cur.uleb128();
+                auto offset = static_cast<std::int64_t>(cur.uleb128()) *
+                              cie.data_alignment_factor;
+                ctx.register_rules.emplace(reg, offset_rule{offset});
+                break;
+            }
+            case DW_CFA_offset_extended_sf: {
+                auto reg = cur.uleb128();
+                auto offset = cur.sleb128() * cie.data_alignment_factor;
+                ctx.register_rules.emplace(reg, offset_rule{offset});
+                break;
+            }
+            case DW_CFA_val_offset: {
+                auto reg = cur.uleb128();
+                auto offset = static_cast<std::int64_t>(cur.uleb128()) *
+                              cie.data_alignment_factor;
+                ctx.register_rules.emplace(reg, val_offset_rule{offset});
+                break;
+            }
+            case DW_CFA_val_offset_sf: {
+                auto reg = cur.uleb128();
+                auto offset = cur.sleb128() * cie.data_alignment_factor;
+                ctx.register_rules.emplace(reg, val_offset_rule{offset});
+                break;
+            }
+            case DW_CFA_register: {
+                auto reg = cur.uleb128();
+                ctx.register_rules.emplace(
+                    reg,
+                    register_rule{static_cast<std::uint32_t>(cur.uleb128())});
+                break;
+            }
+            case DW_CFA_expression:
+                gsdb::error::send("DWARF expressions not yet implemented!");
+            case DW_CFA_val_expression:
+                gsdb::error::send("DWARF expressions not yet implemented!");
+            case DW_CFA_restore_extended: {
+                auto reg = cur.uleb128();
+                ctx.register_rules.emplace(reg, ctx.cie_register_rules.at(reg));
+                break;
+            }
+            case DW_CFA_remember_state:
+                // Pushes the current register rules onto the rule stack without
+                // modifying the current ruleset
+                ctx.rule_stack.push_back({ctx.register_rules, ctx.cfa_rule});
+                break;
+            case DW_CFA_restore_state:
+                // Sets the current register rules to the ruleset on the top of
+                // the rule stack and then removes that ruleset from the stack
+                ctx.register_rules = ctx.rule_stack.back().first;
+                ctx.cfa_rule = ctx.rule_stack.back().second;
+                ctx.rule_stack.pop_back();
+                break;
+        }
+    }
+}
+
+gsdb::registers execute_unwind_rules(unwind_context& ctx,
+                                     gsdb::registers& old_regs,
+                                     const gsdb::process& proc) {
+    auto unwound_regs = old_regs;
+    auto cfa_reg_info = gsdb::register_info_by_dwarf(ctx.cfa_rule.reg);
+    // CFA for this frame marks both the beginning of the current stack frame
+    // and the end of the previous stack frame, which will have been the value
+    // of the stack pointer for the previous stack frame
+    auto cfa = std::get<std::uint64_t>(old_regs.read(cfa_reg_info)) +
+               ctx.cfa_rule.offset;
+    old_regs.set_cfa(gsdb::virt_addr{cfa});
+    // caller's %rsp IS the CFA
+    unwound_regs.write_by_id(gsdb::register_id::rsp, {cfa}, false);
+
+    // the caller's %rsp is exactly this frame's CFA, and the caller's %rip
+    // falls out of the r16 (return address) rule. Everything the next loop
+    // iteration needs is produced by these two.
+    for (auto [reg, rule] : ctx.register_rules) {
+        auto reg_info = gsdb::register_info_by_dwarf(reg);
+
+        if ([[maybe_unused]] auto undef = std::get_if<undefined_rule>(&rule)) {
+            // call undefine on the new register set with the supplied register
+            // ID
+            unwound_regs.undefine(reg_info.id);
+        } else if ([[maybe_unused]] auto same = std::get_if<same_rule>(&rule)) {
+            // if the rule is same_rule, restoring it is a no-op
+        } else if (auto reg = std::get_if<register_rule>(&rule)) {
+            // For register_rule, the old value is stored in the given register,
+            // so we read it and write the value into the reister we are
+            // restoring
+            auto other_reg = gsdb::register_info_by_dwarf(reg->reg);
+            unwound_regs.write(reg_info, old_regs.read(other_reg), false);
+        } else if (auto offset = std::get_if<offset_rule>(&rule)) {
+            // Read the memory at the current CFA plus the given offset and
+            // store that in the register
+            auto addr = gsdb::virt_addr{cfa + offset->offset};
+            auto value = gsdb::from_bytes<std::uint64_t>(
+                proc.read_memory(addr, 8).data());
+            unwound_regs.write(reg_info, {value}, false);
+        } else if (auto val_offset = std::get_if<val_offset_rule>(&rule)) {
+            auto addr = cfa + val_offset->offset;
+            unwound_regs.write(reg_info, {addr}, false);
+        }
+    }
+
+    return unwound_regs;
+}
 
 }  // namespace
 
@@ -1430,4 +1628,49 @@ const std::byte* gsdb::call_frame_information::eh_hdr::operator[](
         eh_hdr_offset.off(), 0);
     gsdb::file_offset fde_offset{*elf, fde_offset_int};
     return elf->file_offset_as_data_pointer(fde_offset);
+}
+
+gsdb::registers gsdb::call_frame_information::unwind(const process& proc,
+                                                     file_addr pc,
+                                                     registers& regs) const {
+    // Look up the program counter value in the `.eh_frame_hdr` search table
+    auto fde_start = eh_hdr_[pc];
+    auto eh_frame_end =
+        dwarf_->elf_file()->get_section_contents(".eh_frame").end();
+
+    // Make sure this FDE contains the given program counter value
+    cursor cur({fde_start, eh_frame_end});
+    auto fde = parse_fde(*this, cur);
+    if (pc < fde.initial_location or
+        pc >= fde.initial_location + fde.address_range) {
+        gsdb::error::send("No unwind information at PC!");
+    }
+
+    unwind_context ctx{};
+    // Initialize the cursor with the instructions stored in the linked CIE
+    ctx.cur = cursor(fde.cie->instructions);
+
+    // Loop, continually executing the instructions until the cursor reaches the
+    // end of span
+    while (!ctx.cur.finished()) {
+        execute_cfi_instruction(*dwarf_->elf_file(), fde, ctx, pc);
+    }
+
+    // After the loop terminates, ctx.register_rules will store the current set
+    // of register rules
+    ctx.cie_register_rules = ctx.register_rules;
+    // Reset the cursor to point to instructions for the FDE
+    ctx.cur = cursor(fde.instructions);
+    // Set current location to the value in the FDE's initial_location field
+    ctx.location = fde.initial_location;
+
+    // Execute the instructions stored in the FDE until either the cursor
+    // reaches the end of the span or the location of the current entry in the
+    // table exceeds the program counter value we’re unwinding
+    while (!ctx.cur.finished() and ctx.location <= pc) {
+        execute_cfi_instruction(*dwarf_->elf_file(), fde, ctx, pc);
+    }
+
+    // Execute the unwind rules we just computed and return the result
+    return execute_unwind_rules(ctx, regs, proc);
 }

@@ -19,7 +19,7 @@ buildInputs = with pkgs; [
 
 ### 2. `CMakeLists.txt` — find the package
 
-In the Dependencies section (around line 86), add:
+In the Dependencies section (now `CMakeLists.txt:87`), add:
 
 ```cmake
 find_package(zydis CONFIG REQUIRED)
@@ -27,7 +27,8 @@ find_package(zydis CONFIG REQUIRED)
 
 ### 3. `src/CMakeLists.txt` — link Zydis to libgsdb
 
-Add after the `target_include_directories` block:
+Add a link line (as applied, it sits at `src/CMakeLists.txt:33`, right after the
+`gsdb::libgsdb` alias and before `target_include_directories`):
 
 ```cmake
 target_link_libraries(libgsdb PUBLIC Zydis::Zydis)
@@ -47,7 +48,7 @@ ZydisDecoder decoder;
 ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 
 ZydisFormatter formatter;
-ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_ATT);
 
 ZydisDecodedInstruction instruction;
 ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
@@ -56,7 +57,7 @@ char buffer[256];
 while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, data, length, &instruction, operands))) {
     ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
         instruction.operand_count_visible, buffer, sizeof(buffer), address, ZYAN_NULL);
-    // buffer now contains e.g. "mov rax, [rbp-0x8]"
+    // buffer now contains e.g. "movq -0x8(%rbp), %rax"
     data += instruction.length;
     length -= instruction.length;
     address += instruction.length;

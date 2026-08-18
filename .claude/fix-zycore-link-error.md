@@ -36,7 +36,7 @@ This is a nixpkgs packaging bug, not a change in this repo. It appeared after
 the zydis derivation was rebuilt/bumped (flake update, channel move, or GC
 rebuild). A clean reconfigure does NOT fix it — the mismatch is deterministic.
 
-## Recommended fix (project CMakeLists.txt)
+## Recommended fix (project CMakeLists.txt) — applied at `CMakeLists.txt:88-93`
 
 `find_package(zydis)` already runs `find_dependency(Zycore)`, so the real
 `Zycore::Zycore` imported target exists after line 87. Alias it under the bare

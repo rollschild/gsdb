@@ -1,6 +1,6 @@
 # `target::step_out()` walkthrough
 
-Location: `src/target.cpp:204-224`
+Location: `src/target.cpp:210-230`
 
 `step_out()` implements the "finish this function, stop in the caller" command. It has
 two paths: a virtual one for *inlined* functions (which have no real stack frame to
@@ -30,14 +30,14 @@ gsdb::stop_reason gsdb::target::step_out() {
 }
 ```
 
-## Setup: figuring out where we are (lines 205–208)
+## Setup: figuring out where we are (lines 211–214)
 
 ```cpp
 auto& stack = get_stack();
 auto inline_stack = stack.inline_stack_at_pc();
 ```
 
-`inline_stack_at_pc()` (`src/stack.cpp:7`) converts the current PC to a `file_addr` and
+`inline_stack_at_pc()` (`src/stack.cpp:12`) converts the current PC to a `file_addr` and
 asks the DWARF parser for the chain of functions at that address. The result is a
 vector of `die`s ordered **outermost-first**: index 0 is the real, physical function
 (`DW_TAG_subprogram`), and each following element is a nested
@@ -62,7 +62,7 @@ inlined code.) The outermost frame is at height `size - 1`, so `height < size - 
 means the user's current conceptual frame is one of the inlined ones — not the physical
 function.
 
-## Path 1: stepping out of an inlined function (lines 210–215)
+## Path 1: stepping out of an inlined function (lines 216–221)
 
 An inlined function has no `call`/`ret` and no frame of its own — its instructions are
 spliced into the caller's body. So "step out" can't pop a stack frame; instead:
@@ -91,7 +91,7 @@ random base).
 return run_until_address(return_address);
 ```
 
-`run_until_address()` (`src/target.cpp:137`) plants a temporary *internal* breakpoint
+`run_until_address()` (`src/target.cpp:143`) plants a temporary *internal* breakpoint
 at the address (unless one already exists there), resumes, waits for the stop, relabels
 the trap as `single_step` if we stopped at the expected spot (so the CLI reports it
 like a step rather than a breakpoint hit), and removes the temporary breakpoint.
@@ -100,7 +100,7 @@ like a step rather than a breakpoint hit), and removes the temporary breakpoint.
 ending at `high_pc`. If the compiler scattered it (`DW_AT_ranges`) or execution leaves
 the range early, this heuristic can miss — a known limitation of the simple approach.
 
-## Path 2: stepping out of a real function (lines 217–223)
+## Path 2: stepping out of a real function (lines 223–229)
 
 ```cpp
 auto frame_pointer = process_->get_registers().read_by_id_as<std::uint64_t>(
@@ -116,7 +116,7 @@ auto return_address =
 ```
 
 This relies on the standard x86-64 frame-pointer prologue. When a function is called
-and runs `push rbp; mov rbp, rsp`, the stack looks like:
+and runs `pushq %rbp; movq %rsp, %rbp`, the stack looks like:
 
 ```
 rbp + 8  → return address   (pushed by the caller's `call`)
@@ -142,8 +142,8 @@ caller's data sits at *higher* addresses than the callee's):
 │                             │    (pushed by the caller's `call` instruction)
 ├─────────────────────────────┤
 │   caller's saved rbp        │  ← rbp + 0   ← rbp points HERE
-│                             │    (pushed by the callee's `push rbp`;
-│                             │     `mov rbp, rsp` then anchors rbp here)
+│                             │    (pushed by the callee's `pushq %rbp`;
+│                             │     `movq %rsp, %rbp` then anchors rbp here)
 ├─────────────────────────────┤
 │   callee's local variables  │  ← rbp - 8, rbp - 16, …
 │   saved callee-saved regs   │
@@ -156,15 +156,18 @@ caller's data sits at *higher* addresses than the callee's):
 ```
 
 In execution order: the caller's `call` pushes the return address; the callee's
-`push rbp` saves the caller's frame pointer one slot below it; `mov rbp, rsp`
-anchors `rbp` at that slot. From that fixed anchor, `[rbp]` is the caller's saved
-`rbp` (the link for walking the frame chain) and `[rbp + 8]` is the return
+`pushq %rbp` saves the caller's frame pointer one slot below it; `movq %rsp, %rbp`
+anchors `rbp` at that slot. From that fixed anchor, `(%rbp)` is the caller's saved
+`rbp` (the link for walking the frame chain) and `8(%rbp)` is the return
 address — `+8` because it's one 8-byte slot toward higher addresses, i.e. one
 slot earlier in push order.
 
 **Caveat**: this only works for code compiled with frame pointers — with
 `-fomit-frame-pointer`, `rbp` is a general-purpose register and this would read
-garbage; a full debugger would use DWARF CFI unwind info instead.
+garbage; a full debugger would use DWARF CFI unwind info instead. The project
+now *has* a CFI unwinder (`call_frame_information::unwind()`, driven by
+`stack::unwind()` in `src/stack.cpp:57`), but `step_out()` has not been switched
+over to it — it still reads the saved return address at `rbp + 8`.
 
 ```cpp
 return run_until_address(virt_addr{return_address});
@@ -176,6 +179,6 @@ caller, and report the stop.
 ## Why not just breakpoint the return address in both cases?
 
 Because for an inlined "call" there *is* no return address on the stack — the whole
-point of the branch at line 210 is that inline frames are a fiction reconstructed from
+point of the branch at line 216 is that inline frames are a fiction reconstructed from
 DWARF, so stepping out of one is simulated by running to the end of its code range,
 while stepping out of a real frame uses the genuine saved return address.

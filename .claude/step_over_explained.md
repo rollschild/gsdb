@@ -1,6 +1,6 @@
 # `target::step_over()` — Explained
 
-Source: `src/target.cpp:159-200`
+Source: `src/target.cpp:166-208`
 
 ## What it is supposed to do
 
@@ -38,7 +38,7 @@ PC currently sits:
    in one shot           at the return addr
 ```
 
-### (A) Inlined frame — `target.cpp:170-178`
+### (A) Inlined frame — `target.cpp:174-185`
 
 ```cpp
 auto inline_stack = stack.inline_stack_at_pc();
@@ -76,19 +76,21 @@ inlined body in a single `run_until_address`.
    skip target = frame_to_skip.high_pc()  ──►  one past the inlined body
 ```
 
-### (B) Real `call` instruction — `target.cpp:179-185`
+### (B) Real `call` instruction — `target.cpp:186-193`
 
 ```cpp
 } else if (auto instructions = disas.disassemble(2, process_->get_pc());
-           instructions[0].text.rfind("call") == 0) {
+           /* instructions[0].text.rfind("call") == 0*/ instructions[0]
+               .text.starts_with("call")) {
     reason = run_until_address(instructions[1].address);
     ...
 }
 ```
 
 Disassemble **2** instructions starting at the PC:
-- `instructions[0]` — the current instruction. `rfind("call") == 0` is the idiom
-  for "the text *starts with* `call`" (find the substring at offset 0).
+- `instructions[0]` — the current instruction. `text.starts_with("call")` is the
+  test (the older `rfind("call") == 0` idiom — "find the substring at offset 0" —
+  is still there, commented out).
 - `instructions[1]` — the very next instruction, i.e. the **return address**.
 
 If the current instruction is a `call`, we don't single-step into the callee.
@@ -104,7 +106,7 @@ callee returns — stepping *over* it.
                   └─ run_until_address(─┘  ← run callee, stop here
 ```
 
-### (C) Ordinary instruction — `target.cpp:186-190`
+### (C) Ordinary instruction — `target.cpp:194-199`
 
 ```cpp
 } else {
@@ -119,7 +121,7 @@ Not a call, not an inline entry → just single-step one machine instruction.
 
 ---
 
-## `run_until_address()` — the "step over" primitive (`target.cpp:136-157`)
+## `run_until_address()` — the "step over" primitive (`target.cpp:143-164`)
 
 Both branch (A) and branch (B) lean on this helper:
 
@@ -163,7 +165,7 @@ yield control to the user if something more interesting happened mid-call.
 
 ---
 
-## The loop condition — `target.cpp:192-195`
+## The loop condition — `target.cpp:200-205`
 
 ```cpp
 } while ((line_entry_at_pc() == orig_line or
@@ -187,7 +189,7 @@ real, non-end-sequence line entry**.
              keep going        keep going        keep going          STOP, return
 ```
 
-`line_entry_at_pc()` (`target.cpp:124-133`) maps the current PC (as a
+`line_entry_at_pc()` (`target.cpp:131-141`) maps the current PC (as a
 **file address**, bias-adjusted) to a line-table row inside the correct compile
 unit. It returns a default/empty iterator when there's no line info — which is
 the third condition's escape hatch.

@@ -1,6 +1,6 @@
 # `stack::reset_inline_height()` explained
 
-Location: `src/stack.cpp:21`
+Location: `src/stack.cpp:26`
 
 ```cpp
 void gsdb::stack::reset_inline_height() {
@@ -14,6 +14,8 @@ void gsdb::stack::reset_inline_height() {
     // of which execution isn't at the start
     for (auto it = stack.rbegin(); it != stack.rend() and it->low_pc() == pc;
          ++it) {
+        // if the PC sits **exactly on that inlined function's first
+        // instruction**.
         ++inline_height_;
     }
 }
@@ -28,7 +30,7 @@ the same physical PC.
 When the compiler inlines functions, several source-level "frames" collapse onto
 the **same machine address**. DWARF records this with nested
 `DW_TAG_inlined_subroutine` DIEs. `inline_stack_at_pc()` (which delegates to
-`dwarf::inline_stack_at_address()`, `src/dwarf.cpp:1088`) flattens that nesting
+`dwarf::inline_stack_at_address()`, `src/dwarf.cpp:1525`) flattens that nesting
 into a vector:
 
 ```
@@ -100,14 +102,19 @@ their entry point; present the frame two levels up from the deepest."
 
 ## Lifecycle
 
-Per the header (`include/libgsdb/stack.hpp:14`), this is **called every time the
-process halts**. Each stop recomputes the cursor from scratch:
+Per the header (`include/libgsdb/stack.hpp:29`), this is **called every time the
+process halts**. It is no longer called directly from `target::notify_stop()`;
+that now calls `stack::unwind()` (`src/stack.cpp:57`), whose first act is
+`reset_inline_height()` followed by `current_frame_ = inline_height_`. Each stop
+still recomputes the cursor from scratch:
 
 ```
-process stops ─► wait_on_signal ─► reset_inline_height()
-                                       │
-                                       ├─ inline_height_ = 0   (point at deepest)
-                                       └─ count entry-point frames upward
+process stops ─► wait_on_signal ─► target::notify_stop ─► stack::unwind
+                                                             │
+                                                             ├─ reset_inline_height()
+                                                             │     ├─ inline_height_ = 0   (point at deepest)
+                                                             │     └─ count entry-point frames upward
+                                                             └─ current_frame_ = inline_height_
 ```
 
 `inline_height()` then exposes the value, and other code (e.g. an `up`/`down`

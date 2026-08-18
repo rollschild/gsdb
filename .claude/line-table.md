@@ -58,7 +58,7 @@ index it for lookups.
 
 ## Where it fits in gsdb
 
-The current `dwarf` parser (`src/dwarf.cpp`) handles
+The `dwarf` parser (`src/dwarf.cpp`) handles
 `.debug_info`/`.debug_abbrev`/`.debug_str`/`.debug_ranges` — the DIE tree, which
 gives functions and their address ranges. The line table is the **next layer
 down**: from "PC is in `main`" to "PC is at `main.cpp:42`." It is what's needed
@@ -66,7 +66,11 @@ for source-level stepping (`step over`, `step into`, `step out` that respect
 source lines rather than machine instructions) and for
 `breakpoint set main.cpp:42`.
 
-It is a natural addition: a `line_table` class that reads `.debug_line` (per
-compile unit — the CU's root DIE has a `DW_AT_stmt_list` attribute giving the
-offset into `.debug_line`), runs the state machine, and exposes
-`get_entry_by_address(file_addr)` and `get_entries_by_line(file, line)`.
+This has since been built. `line_table` reads `.debug_line` per compile unit
+(the CU's root DIE has a `DW_AT_stmt_list` attribute giving the offset into
+`.debug_line` — see `parse_line_table()`, `src/dwarf.cpp:539`), runs the state
+machine lazily through an iterator, and exposes `get_entry_by_address(file_addr)`
+and `get_entries_by_line(path, line)` (`src/dwarf.cpp:1485`). `target::step_in()`,
+`step_over()`, and `step_out()` are built on it, and the CLI's
+`breakpoint set <file>:<line>` routes to `target::create_line_breakpoint()`
+(`tools/gsdb.cpp:496`).

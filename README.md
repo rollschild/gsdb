@@ -24,9 +24,10 @@ gsdb> watch set 0x555555555169 rw 1
 ### The linking flow in summary
 
 ```txt
-include/libgsdb/libgsdb.hpp  (public header)
+ include/libgsdb/          (public headers)
+ src/                      (library implementation)
       ↓ PUBLIC include path
- src/libgsdb.cpp → [libgsdb.a]
+   [libgsdb.a]  (CMake target: gsdb::libgsdb, links Zydis::Zydis)
       ↓                    ↓
  gsdb::libgsdb        gsdb::libgsdb
  + PkgConfig::libedit + Catch2::Catch2WithMain
@@ -655,3 +656,7 @@ The `.eh_frame_hdr` section contains a binary search table that maps addresses t
 DWARF call frame information essentially specifies a huge table. Each row of the table lists a program counter value.
 
 The rules in that row tell you how to unwind the current stack frame when the program counter has a value in the noninclusive range between that address and the program counter value in the next table row (or the end of the range represented by the matching FDE, in the case of the last row in the table).
+
+#### Executing Register Rules
+
+To execute the register rules, we should make a copy of the old register values, loop over the set of rules, and modify the register values based on the relevant rule.

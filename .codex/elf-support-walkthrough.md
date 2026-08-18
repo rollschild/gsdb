@@ -620,13 +620,18 @@ find symbol range containing file_addr
 print symbol name
 ```
 
-The CLI code then checks whether the symbol is a function:
+This check has since moved out of the CLI into
+`target::function_name_at_address()` (`src/target.cpp:272`), which first asks
+DWARF for a function DIE and only falls back to the ELF symbol table:
 
 ```cpp
-ELF64_ST_TYPE(func.value()->st_info) == STT_FUNC
+} else if (auto elf_func = obj->get_symbol_containing_address(file_address);
+           elf_func and
+           ELF64_ST_TYPE(elf_func.value()->st_info) == STT_FUNC) {
 ```
 
-If yes, it appends the function name to the stop message.
+If the symbol is a function, its name is demangled and returned, and the CLI
+appends it to the stop message.
 
 ## Load Bias
 
