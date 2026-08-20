@@ -220,13 +220,22 @@ gsdb::stop_reason gsdb::target::step_out() {
         return run_until_address(return_address);
     }
 
-    auto frame_pointer = process_->get_registers().read_by_id_as<std::uint64_t>(
-        register_id::rbp);
-
-    auto return_address =
-        process_->read_memory_as<std::uint64_t>(virt_addr{frame_pointer + 8});
-
-    return run_until_address(virt_addr{return_address});
+    // grab the stack frame above this one, and retrieve the PC value for that
+    // frame, which will be the return address for the current frame
+    auto& regs = stack.frames()[stack.current_frame_index() + 1].regs;
+    virt_addr return_address{
+        regs.read_by_id_as<std::uint64_t>(register_id::rip)};
+    stop_reason reason;
+    // Keep running up to that address until the number of stack frames is less
+    // than it was at the start of the stepping procedure
+    for (auto frames = stack.frames().size();
+         stack.frames().size() >= frames;) {
+        reason = run_until_address(return_address);
+        if (!reason.is_breakpoint() or process_->get_pc() != return_address) {
+            return reason;
+        }
+    }
+    return reason;
 }
 
 gsdb::target::find_functions_result gsdb::target::find_functions(

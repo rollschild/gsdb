@@ -5,7 +5,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cerrno>
-#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +17,7 @@
 #include <libgsdb/target.hpp>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "libgsdb/detail/dwarf.h"
@@ -861,4 +861,23 @@ TEST_CASE("Source-level stepping", "[target]") {
     REQUIRE(target->function_name_at_address(pc) == "main");
 
     close(dev_null);
+}
+
+TEST_CASE("Stack unwinding", "[unwind]") {
+    auto path = std::string(TARGETS_DIR) + "/step";
+    auto target = target::launch(path);
+    auto& proc = target->get_process();
+    target->create_function_breakpoint("scratch_ears").enable();
+    proc.resume();
+    proc.wait_on_signal();
+    target->step_in();
+    target->step_in();
+
+    std::vector<std::string_view> expected_names = {"scratch_ears", "pet_cat",
+                                                    "find_happiness", "main"};
+
+    auto frames = target->get_stack().frames();
+    for (size_t i = 0; i < frames.size(); ++i) {
+        REQUIRE(frames[i].func_die.name().value() == expected_names[i]);
+    }
 }

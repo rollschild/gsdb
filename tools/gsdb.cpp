@@ -76,6 +76,8 @@ step        - Step-in
 stepi       - Single instruction step
 watchpoint  - Commands for operating on watchpoints
 catchpoint  - Commands for operating on catchpoints
+down        - Select the stack frame below the current one
+up          - Select the stack frame above the current one
 )";
     } else if (is_prefix(args[1], "register")) {
         std::cerr << R"(Available commands:
@@ -322,7 +324,7 @@ void print_stop_reason(const gsdb::target& target, gsdb::stop_reason reason) {
     std::print("Process {} {}\n", target.get_process().pid(), message);
 }
 
-void handle_register_read(gsdb::process& process,
+void handle_register_read(gsdb::target& target,
                           const std::vector<std::string>& args) {
     auto format = [](auto t) {
         if constexpr (std::is_floating_point_v<decltype(t)>) {
@@ -340,25 +342,28 @@ void handle_register_read(gsdb::process& process,
         }
     };
 
+    auto regs = target.get_stack().regs();
+    auto print_register_value = [&](auto info) {
+        if (regs.is_undefined(info.id)) {
+            std::print("{}:\tundefined\n", info.name);
+        } else {
+            auto value = regs.read(info);
+            std::print("{}:\t{}\n", info.name, std::visit(format, value));
+        }
+    };
+
     // `register read` or `register read all`
     if (args.size() == 2 or (args.size() == 3 and args[2] == "all")) {
         for (auto& info : gsdb::g_register_infos) {
-            auto should_print =
-                (args.size() == 3 or info.type == gsdb::register_type::gpr) and
-                info.name != "orig_rax";
-            // orig_rax is not a real register, just something that `ptrace`
-            // uses to communicate information about syscalls
-            if (!should_print) continue;
-
-            auto value = process.get_registers().read(info);
-            std::print("{}:\t{}\n", info.name, std::visit(format, value));
+            if (args.size() == 3 or info.type == gsdb::register_type::gpr) {
+                print_register_value(info);
+            }
         }
     } else if (args.size() == 3) {
         // `register read <register-name>`
         try {
             auto info = gsdb::register_info_by_name(args[2]);
-            auto value = process.get_registers().read(info);
-            std::print("{}:\t{}\n", info.name, std::visit(format, value));
+            print_register_value(info);
         } catch (gsdb::error& err) {
             std::cerr << "No such register\n";
             return;
@@ -415,7 +420,7 @@ void handle_register_write(gsdb::process& process,
     }
 }
 
-void handle_register_command(gsdb::process& process,
+void handle_register_command(gsdb::target& target,
                              const std::vector<std::string>& args) {
     if (args.size() < 2) {
         print_help({"help", "register"});
@@ -423,9 +428,9 @@ void handle_register_command(gsdb::process& process,
     }
 
     if (is_prefix(args[1], "read")) {
-        handle_register_read(process, args);
+        handle_register_read(target, args);
     } else if (is_prefix(args[1], "write")) {
-        handle_register_write(process, args);
+        handle_register_write(target.get_process(), args);
     } else {
         print_help({"help", "register"});
     }
@@ -770,23 +775,39 @@ void print_source(const std::filesystem::path& path, std::uint64_t line,
     std::cout << std::endl;
 }
 
+void print_code_location(gsdb::target& target) {
+    if (target.get_stack().has_frames()) {
+        auto& frame = target.get_stack().current_frame();
+        print_source(frame.location.file->path, frame.location.line, 3);
+    } else {
+        // we don't have enough information
+        print_disassembly(target.get_process(), target.get_process().get_pc(),
+                          5);
+    }
+}
+
+void print_backtrace(const gsdb::target& target) {
+    auto& stack = target.get_stack();
+    std::size_t i = 0;
+    for (auto& frame : stack.frames()) {
+        // the address that the unwinder says to use for backtrace reports
+        auto pc = frame.backtrace_report_address;
+        auto func_name = target.function_name_at_address(pc);
+
+        // indicate that it is the active frame
+        std::string message = i == stack.current_frame_index() ? "*" : " ";
+        message += std::format("[{}]: {:#x} {}", i++, pc.addr(), func_name);
+        if (frame.inlined) {
+            message += std::format(" [inlined] {}", *frame.func_die.name());
+        }
+        std::print("{}\n", message);
+    }
+}
+
 void handle_stop(gsdb::target& target, gsdb::stop_reason reason) {
     print_stop_reason(target, reason);
     if (reason.reason == gsdb::process_state::stopped) {
-        if (target.get_stack().inline_height() > 0) {
-            // simulating regular function calls
-            auto stack = target.get_stack().inline_stack_at_pc();
-            auto frame =
-                stack[stack.size() - target.get_stack().inline_height()];
-            print_source(frame.file().path, frame.line(), 3);
-        } else if (auto entry = target.line_entry_at_pc();
-                   entry != gsdb::line_table::iterator()) {
-            print_source(entry->file_entry->path, entry->line, 3);
-        } else {
-            // we don't have enough information
-            print_disassembly(target.get_process(),
-                              target.get_process().get_pc(), 5);
-        }
+        print_code_location(target);
     }
 }
 /**
@@ -869,7 +890,8 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
         auto reason = process->wait_on_signal();
         handle_stop(*target, reason);
     } else if (is_prefix(command, "register")) {
-        handle_register_command(*process, args);
+        // register commands must now look at the call stack
+        handle_register_command(*target, args);
     } else if (is_prefix(command, "help")) {
         print_help(args);
     } else if (is_prefix(command, "breakpoint")) {
@@ -894,6 +916,14 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
         handle_watchpoint_command(*process, args);
     } else if (is_prefix(command, "catchpoint")) {
         handle_catchpoint_command(*process, args);
+    } else if (is_prefix(command, "up")) {
+        target->get_stack().up();
+        print_code_location(*target);
+    } else if (is_prefix(command, "down")) {
+        target->get_stack().down();
+        print_code_location(*target);
+    } else if (is_prefix(command, "backtrace")) {
+        print_backtrace(*target);
     } else {
         std::cerr << "Unknown command!\n";
     }
