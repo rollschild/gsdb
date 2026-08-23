@@ -25,6 +25,10 @@ add_test_cpp_target(memory)
 add_test_cpp_target(anti_debugger)
 add_test_cpp_target(overloaded)
 add_test_cpp_target(step)
+add_test_cpp_target(marshmallow)
+
+# SHARED: build a shared lib, rather than a static one
+add_library(meow SHARED "libmeow.cpp")
 
 add_test_asm_target(reg_write)
 add_test_asm_target(reg_read)
@@ -32,3 +36,7 @@ add_test_asm_target(reg_read)
 add_executable(multi_cu multi_cu_main.cpp multi_cu_other.cpp)
 target_compile_options(multi_cu PRIVATE -g -O0 -pie -gdwarf-4)
 add_dependencies(tests multi_cu)
+
+# -fPIC: tell compiler to output position-independent code
+target_compile_options(meow PRIVATE -g -O0 -fPIC -gdwarf-4)
+target_link_libraries(marshmallow PRIVATE meow)

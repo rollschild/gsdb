@@ -196,11 +196,20 @@ gsdb::stop_reason gsdb::process::wait_on_signal() {
         auto instr_begin = get_pc() - 1;
         if (reason.info == SIGTRAP) {
             if (reason.trap_reason == trap_type::software_break and
-                breakpoint_sites_.enabled_stoppoint_at_address(instr_begin) and
+                breakpoint_sites_.contains_address(instr_begin) and
                 breakpoint_sites_.get_by_address(instr_begin).is_enabled()) {
                 // if caused by software breakpoint, walk the program counter
                 // back 1 byte to the start of the `int3` instruction
                 set_pc(instr_begin);
+
+                auto& bp = breakpoint_sites_.get_by_address(instr_begin);
+                if (bp.parent_) {
+                    bool should_restart = bp.parent_->notify_hit();
+                    if (should_restart) {
+                        resume();
+                        return wait_on_signal();
+                    }
+                }
             } else if (reason.trap_reason == trap_type::hardware_break) {
                 // if caused by hardware stoppoint
                 auto id = get_current_hardware_stoppoint();

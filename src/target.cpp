@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "libgsdb/breakpoint.hpp"
 #include "libgsdb/breakpoint_site.hpp"
@@ -47,6 +48,17 @@ std::unique_ptr<gsdb::target> gsdb::target::launch(
     auto tgt =
         std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
     tgt->get_process().set_target(tgt.get());
+
+    // retrieve the real entry point of the executable from the auxiliary vector
+    auto entry_point = virt_addr{tgt->get_process().get_auxv()[AT_ENTRY]};
+    auto& entry_bp = tgt->create_address_breakpoint(entry_point, false, true);
+    entry_bp.install_hit_handler([target = tgt.get()] {
+        target->resolve_dynamic_linker_rendezvous();
+        // the process should restart immediately after resolving the address of
+        // the rendezvous structure
+        return true;
+    });
+    entry_bp.enable();
     return tgt;
 }
 
@@ -61,6 +73,7 @@ std::unique_ptr<gsdb::target> gsdb::target::attach(pid_t pid) {
     auto tgt =
         std::unique_ptr<target>(new target(std::move(proc), std::move(obj)));
     tgt->get_process().set_target(tgt.get());
+    tgt->resolve_dynamic_linker_rendezvous();
     return tgt;
 }
 
@@ -298,4 +311,50 @@ std::string gsdb::target::function_name_at_address(
     }
 
     return "";
+}
+
+void gsdb::target::resolve_dynamic_linker_rendezvous() {
+    // immediately return if address of the rendezvous structure already solved
+    if (dynamic_linker_rendezvous_address_.addr()) return;
+
+    auto dynamic_section = main_elf_->get_section(".dynamic");
+    auto dynamic_start =
+        file_addr{*main_elf_, dynamic_section.value()->sh_addr};
+    auto dynamic_size = dynamic_section.value()->sh_size;
+    auto dynamic_bytes =
+        process_->read_memory(dynamic_start.to_virt_addr(), dynamic_size);
+
+    // typedef struct {
+    //     Elf64_Sxword d_tag;
+    //
+    //        union {
+    //            Elf64_Xword d_val;
+    //            Elf64_Addr d_ptr;
+    //     } d_un;
+    // } Elf64_Dyn;
+    std::vector<Elf64_Dyn> dynamic_entries(dynamic_size / sizeof(Elf64_Dyn));
+    std::copy(dynamic_bytes.begin(), dynamic_bytes.end(),
+              reinterpret_cast<std::byte*>(dynamic_entries.data()));
+
+    for (auto entry : dynamic_entries) {
+        if (entry.d_tag == DT_DEBUG) {
+            // `DT_DEBUG` entry stores the rendezvous structure's address
+            dynamic_linker_rendezvous_address_ = virt_addr{entry.d_un.d_ptr};
+            // initialize a list of the loaded libraries
+            reload_dynamic_libraries();
+
+            auto debug_info = read_dynamic_linker_rendezvous();
+            // `r_brk` member of the rendezvous structure holds pointer to
+            // function `_dl_debug_state`
+            auto debug_state_addr = virt_addr{debug_info->r_brk};
+            auto& debug_state_bp =
+                create_address_breakpoint(debug_state_addr, false, true);
+            debug_state_bp.install_hit_handler([&] {
+                reload_dynamic_libraries();
+                return true;
+            });
+
+            debug_state_bp.enable();
+        }
+    }
 }

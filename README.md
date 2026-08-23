@@ -660,3 +660,114 @@ The rules in that row tell you how to unwind the current stack frame when the pr
 #### Executing Register Rules
 
 To execute the register rules, we should make a copy of the old register values, loop over the set of rules, and modify the register values based on the relevant rule.
+
+### Shared Libraries
+
+#### Program Loading
+
+**Program loading** is the process of taking an executable from the filesystem, loading it into memory, preparing it for execution, and jumping to its entry point.
+
+**Program headers** describe the segments of the program relevant to program loading.
+
+##### Static Executables
+
+**Static executables**: executables that don’t require the dynamic linker.
+Their program headers don’t include an `INTERP` segment.
+
+`INTERP` Specifies the location and size of the path to the dynamic linker.
+
+When a program requests that the **kernel** load a program through a call to one of the `exec` functions, the kernel first cleans up any information from the old process that it no longer needs:
+
+- additional running threads
+- old memory maps
+- any file descriptors marked `O_CLOEXEC`
+- signal handlers
+
+After cleaning up the old process, the kernel begins setting up for the new one. It allocates memory to hold the process’s stack, then loops through all of the `LOAD` segments in the program headers and loads them at the correct positions.
+
+The kernel maps the entirety of a special ELF file called the **virtual dynamic shared object (vDSO)** into the process’s address space. The **vDSO** is a shared library that implements certain syscalls by reading directly from kernel space without having to perform a context switch into the kernel, making these syscalls run roughly four times as fast. On x64, the syscalls implemented in the vDSO are
+
+- `clock_gettime`
+- `getcpu`
+- `gettime`
+- `gettimeofday`
+
+Once it has set up the virtual address space, the kernel initializes the process’s stack.
+At the top of the stack, it puts the **auxiliary vector**, the environment variables for the process, and the command line arguments.
+
+Finally, the kernel jumps back to the program’s entry point, in user space.
+
+##### Dynamic Executables
+
+**Address space layout randomization (ASLR)**
+
+The entry point to which the kernel eventually jumps after setting up program execution isn’t the entry point of the program we’re trying to run, but the entry point of the **dynamic linker**.
+
+The dynamic linker runs in user space rather than in the kernel.
+
+The kernel loads the dynamic linker specified in the `INTERP` segment, sets up an address space in which it can run, provides it with the ELF file to be loaded, and then context-switches into the dynamic linker.
+
+The dynamic linker has two main jobs: **loading dependencies** and **carrying out relocations**.
+
+#### Loading Dependencies
+
+The linker needs information about the shared libraries on which the program depends, which it retrieves from the `.dynamic` section of the program’s ELF file, pointed to by the `DYNAMIC` segment in the program headers.
+
+The dynamic linker must communicate information about the dynamic libraries it has loaded, including what their virtual addresses are, to other tools, such as our debugger, via **rendezvous structure** that the linker maintains in the address space of the running process.
+
+##### The `.dynamic` Section
+
+To read the `.dynamic` section: `readelf -d test/targets/hello_sdb`.
+
+##### The Rendezvous Structure
+
+An area of memory that the dynamic linker uses to communicate with debuggers and other tools that need to track the loading and unloading of shared libraries.
+
+Structure:
+
+```c
+struct r_debug {
+    int r_version;
+    struct link_map *r_map;
+    ElfW(Addr) r_brk;
+    enum {
+        RT_CONSISTENT,
+        RT_ADD,
+        RT_DELETE,
+    } r_state;
+    ElfW(Addr) r_ldbase;
+  };
+```
+
+#### Relocations
+
+##### Global Offset Table
+
+Enables updating references that reside in read-only sections.
+
+It also facilitates relocating a symbol by updating only one location, rather than every single reference to it.
+
+##### Relocation Records
+
+Live in sections named `.rel.<ID>` or `.rela.<ID>`, where `<ID>` specifies the element to which the relocations apply (usually a section name or dyn, for dynamic relocations).
+
+`readelf -r`: see the relocations for an ELF file.
+
+It’s the linker’s job to find a definition for `libmeow_client_cuteness` among the object files to which it has access.
+
+##### Procedure Linkage Table
+
+Problem 1: there are usually way more references to functions across shared library boundaries than there are references to variables.
+
+Problem 2: the instructions for direct calls and indirect calls (those made through a pointer) have different encodings and instruction lengths on x64, and some function calls use the `jmp` instruction rather than the `call` instruction.
+
+The **procedure linkage table (PLT)** solves problem one by deferring the resolution of the real function address until the function is called for the first time (a practice called **lazy binding)** and solves problem two by providing a fixed location to call, enabling the encoding of external calls as direct calls.
+
+To disable **lazy binding**, set the `BIND_NOW` flag in the ELF file’s `.dynamic` section.
+
+#### Tracing Shared Library Loading
+
+1. Set an internal breakpoint on the real entry point of the executable. When we hit the breakpoint, the dynamic linker should be initialized.
+2. Walk through the loaded library list in the rendezvous structure, parsing the ELF files for every shared library noted there and adding them to a collection in sdb::target. We’ll also dump the vDSO to disk so we can reference it in the same way as other shared libraries.
+3. Set an internal breakpoint on the `_dl_debug_state` function, a pointer to which is stored in the `r_brk` member of the rendezvous structure.
+4. Whenever we hit the `_dl_debug_state` function breakpoint and the `r_state` member of the rendezvous structure is `RT_CONSISTENT`, reread `r_map`, adding any new shared libraries and unloading any ones that were removed.

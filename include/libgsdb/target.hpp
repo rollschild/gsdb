@@ -2,6 +2,7 @@
 #define GSDB_TARGET_HPP
 
 #include <elf.h>
+#include <link.h>
 #include <sys/types.h>
 
 #include <algorithm>
@@ -91,9 +92,20 @@ class target {
 
     std::string function_name_at_address(virt_addr address) const;
 
+    std::optional<r_debug> read_dynamic_linker_rendezvous() const;
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), elf_(std::move(obj)), stack_(this) {}
+
+    /**
+     * Locate the dynamic section of the inferior, read it;
+     * Locate the dynamic linker rendezvous structure address in the `DT_DEBUG`
+     * entry, read the list of loaded dynamic libraries, and then set an
+     * internal breakpoint on the `_dl_debug_state` function.
+     */
+    void resolve_dynamic_linker_rendezvous();
+    void reload_dynamic_libraries();
 
     std::unique_ptr<process> process_;
     std::unique_ptr<elf> elf_;
@@ -101,6 +113,8 @@ class target {
     stack stack_;
 
     stoppoint_collection<breakpoint> breakpoints_;
+
+    virt_addr dynamic_linker_rendezvous_address_;
 };
 }  // namespace gsdb
 

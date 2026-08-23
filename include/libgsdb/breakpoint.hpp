@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <libgsdb/breakpoint_site.hpp>
 #include <libgsdb/stoppoint_collection.hpp>
 #include <libgsdb/types.hpp>
@@ -64,6 +65,21 @@ class breakpoint {
         return !breakpoint_sites_.get_in_region(low, high).empty();
     }
 
+    /**
+     * Register a callback on `gsdb::breakpoint` objects to call whenever the
+     * breakpoint is hit.
+     */
+    void install_hit_handler(std::function<bool(void)> on_hit) {
+        on_hit_ = std::move(on_hit);
+    }
+
+    bool notify_hit() const {
+        if (on_hit_) {
+            return on_hit_();
+        }
+        return false;
+    }
+
    protected:
     // the type that's managing `gsdb::breakpoint`
     // it a `friend` so that it can construct new `gsdb::breakpoint` objects
@@ -79,6 +95,8 @@ class breakpoint {
     bool is_internal_ = false;
     stoppoint_collection<breakpoint_site, false> breakpoint_sites_;
     breakpoint_site::id_type next_site_id_ = 1;
+
+    std::function<bool(void)> on_hit_;
 };
 
 class function_breakpoint : public breakpoint {
