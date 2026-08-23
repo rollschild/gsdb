@@ -91,39 +91,35 @@ void gsdb::function_breakpoint::resolve() {
  * create a breakpoint site at the correct load address
  */
 void gsdb::line_breakpoint::resolve() {
-    auto& dwarf = target_->get_elf().get_dwarf();
-    // the line we are looking for could be in any compile unit
-    for (auto& cu : dwarf.compile_units()) {
-        auto entries = cu->lines().get_entries_by_line(file_, line_);
+    auto entries = target_->get_line_entries_by_line(file_, line_);
 
-        // _multiple_ entries could be associated with a single line of code
-        // so we resolve breakpoint sites for all entries
-        for (auto entry : entries) {
-            // Grab the DWARF file from the line table entry rather than using
-            // the one we got from the target. This is to support shared libs
-            auto& dwarf = entry->address.elf_file()->get_dwarf();
-            auto stack = dwarf.inline_stack_at_address(entry->address);
-            auto no_inline_stack = stack.size() == 1;
-            // Should skip prologue if:
-            //   - no inline stack
-            //   - the function DIE has address range information
-            //   - address for the line table entry we found is at the start of
-            //   the function
-            auto should_skip_prologue = no_inline_stack and
-                                        (stack[0].contains(DW_AT_ranges) or
-                                         stack[0].contains(DW_AT_low_pc)) and
-                                        stack[0].low_pc() == entry->address;
-            if (should_skip_prologue) {
-                ++entry;
-            }
-            auto load_address = entry->address.to_virt_addr();
-            if (!breakpoint_sites_.contains_address(load_address)) {
-                auto& new_site = target_->get_process().create_breakpoint_site(
-                    this, next_site_id_++, load_address, is_hardware_,
-                    is_internal_);
-                breakpoint_sites_.push(&new_site);
-                if (is_enabled_) new_site.enable();
-            }
+    // _multiple_ entries could be associated with a single line of code
+    // so we resolve breakpoint sites for all entries
+    for (auto entry : entries) {
+        // Grab the DWARF file from the line table entry rather than using
+        // the one we got from the target. This is to support shared libs
+        auto& dwarf = entry->address.elf_file()->get_dwarf();
+        auto stack = dwarf.inline_stack_at_address(entry->address);
+        auto no_inline_stack = stack.size() == 1;
+        // Should skip prologue if:
+        //   - no inline stack
+        //   - the function DIE has address range information
+        //   - address for the line table entry we found is at the start of
+        //   the function
+        auto should_skip_prologue = no_inline_stack and
+                                    (stack[0].contains(DW_AT_ranges) or
+                                     stack[0].contains(DW_AT_low_pc)) and
+                                    stack[0].low_pc() == entry->address;
+        if (should_skip_prologue) {
+            ++entry;
+        }
+        auto load_address = entry->address.to_virt_addr();
+        if (!breakpoint_sites_.contains_address(load_address)) {
+            auto& new_site = target_->get_process().create_breakpoint_site(
+                this, next_site_id_++, load_address, is_hardware_,
+                is_internal_);
+            breakpoint_sites_.push(&new_site);
+            if (is_enabled_) new_site.enable();
         }
     }
 }

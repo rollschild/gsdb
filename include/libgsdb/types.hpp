@@ -15,6 +15,8 @@ using byte128 = std::array<std::byte, 16>;
 class file_addr;
 class elf;
 
+class elf_collection;
+
 class virt_addr {
    public:
     virt_addr() = default;
@@ -48,6 +50,7 @@ class virt_addr {
     }
 
     file_addr to_file_addr(const elf& obj) const;
+    file_addr to_file_addr(const elf_collection& elves) const;
 
    private:
     std::uint64_t addr_ = 0;

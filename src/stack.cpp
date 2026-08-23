@@ -76,7 +76,7 @@ void gsdb::stack::unwind() {
     // lives outside of the ELF file we’re operating on (indicating that this
     // function belongs to some shared library or that we’ve hit the topmost
     // frame):
-    while (virt_pc.addr() != 0 and elf == &target_->get_elf()) {
+    while (virt_pc.addr() != 0 and elf) {
         // Create stack_frame objects and unwind another frame
         // Grab DWARF info needed to calculate the inline stack
         auto& dwarf = elf->get_dwarf();
@@ -101,7 +101,7 @@ void gsdb::stack::unwind() {
         regs = dwarf.cfi().unwind(proc, file_pc, frames_.back().regs);
         virt_pc =
             virt_addr{regs.read_by_id_as<std::uint64_t>(register_id::rip) - 1};
-        file_pc = virt_pc.to_file_addr(target_->get_elf());
+        file_pc = virt_pc.to_file_addr(target_->get_elves());
         elf = file_pc.elf_file();
     }
 }

@@ -4,10 +4,13 @@
 #include <algorithm>
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <libgsdb/target.hpp>
 #include <libgsdb/types.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +41,25 @@ std::unique_ptr<gsdb::elf> create_loaded_elf(
         // from the actual load address of the entry point
         gsdb::virt_addr(auxv[AT_ENTRY] - obj->get_header().e_entry));
     return obj;
+}
+
+std::filesystem::path dump_vdso(const gsdb::process& proc,
+                                gsdb::virt_addr address) {
+    char tmp_dir[] =
+        "/tmp/gsdb-XXXXXX";  // XXXXXX fill be filled with random characters
+    mkdtemp(tmp_dir);
+    auto vdso_dump_path = std::filesystem::path(tmp_dir) / "linux-vdso.so.1";
+    std::ofstream vdso_dump(vdso_dump_path, std::ios::binary);
+    auto vdso_header = proc.read_memory_as<Elf64_Ehdr>(address);
+    // vDSO does have section headers
+    // offset the start of the section headers by the number of section entries
+    // multiplied by the size of an entry
+    auto vdso_size =
+        vdso_header.e_shoff + vdso_header.e_shentsize * vdso_header.e_shnum;
+    auto vdso_bytes = proc.read_memory(address, vdso_size);
+    vdso_dump.write(reinterpret_cast<const char*>(vdso_bytes.data()),
+                    vdso_bytes.size());
+    return vdso_dump_path;
 }
 }  // namespace
 
@@ -78,7 +100,7 @@ std::unique_ptr<gsdb::target> gsdb::target::attach(pid_t pid) {
 }
 
 gsdb::file_addr gsdb::target::get_pc_file_address() const {
-    return process_->get_pc().to_file_addr(*elf_);
+    return process_->get_pc().to_file_addr(elves_);
 }
 
 /**
@@ -255,18 +277,18 @@ gsdb::target::find_functions_result gsdb::target::find_functions(
     std::string name) const {
     find_functions_result res;
 
-    // locate functions
-    auto dwarf_found = elf_->get_dwarf().find_functions(name);
-    if (dwarf_found.empty()) {
-        // if no functions found, look them up in the ELF symbol table
-        auto elf_found = elf_->get_symbols_by_name(name);
-        for (auto sym : elf_found) {
-            res.elf_functions.push_back(std::pair{elf_.get(), sym});
+    elves_.for_each([&](auto& elf) {
+        auto dwarf_found = elf.get_dwarf().find_functions(name);
+        if (dwarf_found.empty()) {
+            auto elf_found = elf.get_symbols_by_name(name);
+            for (auto sym : elf_found) {
+                res.elf_functions.push_back(std::pair{&elf, sym});
+            }
+        } else {
+            res.dwarf_functions.insert(res.dwarf_functions.end(),
+                                       dwarf_found.begin(), dwarf_found.end());
         }
-    } else {
-        res.dwarf_functions.insert(res.dwarf_functions.end(),
-                                   dwarf_found.begin(), dwarf_found.end());
-    }
+    });
 
     return res;
 }
@@ -293,13 +315,15 @@ gsdb::breakpoint& gsdb::target::create_line_breakpoint(
  */
 std::string gsdb::target::function_name_at_address(
     gsdb::virt_addr address) const {
-    auto file_address = address.to_file_addr(*elf_);
+    auto file_address = address.to_file_addr(elves_);
     auto obj = file_address.elf_file();
     if (!obj) return "";
 
     auto func = obj->get_dwarf().function_containing_address(file_address);
+    auto elf_filename = obj->path().filename().string();
+    std::string func_name = "";
     if (func and func->name()) {
-        return std::string(*func->name());
+        func_name = *func->name();
     } else if (auto elf_func = obj->get_symbol_containing_address(file_address);
                elf_func and
                ELF64_ST_TYPE(elf_func.value()->st_info) == STT_FUNC) {
@@ -307,7 +331,13 @@ std::string gsdb::target::function_name_at_address(
         // offset, and if we find one that is a function symbol, demangle it and
         // return it
         auto elf_name = std::string{obj->get_string(elf_func.value()->st_name)};
-        return abi::__cxa_demangle(elf_name.c_str(), nullptr, nullptr, nullptr);
+        func_name = obj->get_string(elf_func.value()->st_name);
+        // return abi::__cxa_demangle(elf_name.c_str(), nullptr, nullptr,
+        // nullptr);
+    }
+
+    if (!func_name.empty()) {
+        return elf_filename + "`" + func_name;
     }
 
     return "";
@@ -356,5 +386,80 @@ void gsdb::target::resolve_dynamic_linker_rendezvous() {
 
             debug_state_bp.enable();
         }
+    }
+}
+
+/**
+ * Look for line entries in any ELF file
+ */
+std::vector<gsdb::line_table::iterator> gsdb::target::get_line_entries_by_line(
+    std::filesystem::path path, std::size_t line) const {
+    std::vector<gsdb::line_table::iterator> entries;
+    elves_.for_each([&](auto& elf) {
+        for (auto& cu : elf.get_dwarf().compile_units()) {
+            auto new_entries = cu->lines().get_entries_by_line(path, line);
+            entries.insert(entries.end(), new_entries.begin(),
+                           new_entries.end());
+        }
+    });
+    return entries;
+}
+
+std::optional<r_debug> gsdb::target::read_dynamic_linker_rendezvous() const {
+    if (dynamic_linker_rendezvous_address_.addr()) {
+        return process_->read_memory_as<r_debug>(
+            dynamic_linker_rendezvous_address_);
+    }
+    return std::nullopt;
+}
+
+void gsdb::target::reload_dynamic_libraries() {
+    auto debug = read_dynamic_linker_rendezvous();
+    if (!debug) return;
+
+    auto entry_ptr = debug->r_map;
+    // loop until we hit the end of the list
+    while (entry_ptr != nullptr) {
+        auto entry_addr = virt_addr(reinterpret_cast<std::uint64_t>(entry_ptr));
+        auto entry = process_->read_memory_as<link_map>(entry_addr);
+        entry_ptr = entry.l_next;
+
+        // read path to the ELF file, encoded as null-terminated string in the
+        // `l_name` field of the map entry
+        auto name_addr =
+            virt_addr(reinterpret_cast<std::uint64_t>(entry.l_name));
+        // max path size on linux is 4096 bytes
+        auto name_bytes = process_->read_memory(name_addr, 4096);
+        auto name =
+            std::filesystem::path{reinterpret_cast<char*>(name_bytes.data())};
+        if (name.empty()) continue;
+
+        // check whether we've already created an `gsdb::elf` object for this
+        // shared lib
+        const elf* found = nullptr;
+        const auto vdso_name = "linux-vdso.so.1";
+        // should be an absolute path to the ELF file for that share lib, except
+        // for vDSO
+        if (name == vdso_name) {
+            found = elves_.get_elf_by_filename(name.c_str());
+        } else {
+            found = elves_.get_elf_by_path(name);
+        }
+
+        // if didn't find a corresponding `gsdb::elf` object, create one
+        if (!found) {
+            if (name == vdso_name) {
+                // if this entry is for vDSO, first dump the vDSO to disk
+                name = dump_vdso(*process_, virt_addr{entry.l_addr});
+            }
+            auto new_elf = std::make_unique<elf>(name);
+            new_elf->notify_loaded(virt_addr{entry.l_addr});
+            elves_.push(std::move(new_elf));
+        }
+
+        // resolve all breakpoints in the target, as the user may have set
+        // breakpoints that require the DWARF info of one of the shared libs to
+        // resolve
+        breakpoints_.for_each([&](auto& bp) { bp.resolve(); });
     }
 }

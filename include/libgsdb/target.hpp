@@ -45,8 +45,8 @@ class target {
 
     process& get_process() { return *process_; }
     const process& get_process() const { return *process_; }
-    elf& get_elf() { return *elf_; }
-    const elf& get_elf() const { return *elf_; }
+    elf& get_elf() { return *main_elf_; }
+    const elf& get_elf() const { return *main_elf_; }
 
     void notify_stop(const gsdb::stop_reason& reason);
 
@@ -94,9 +94,19 @@ class target {
 
     std::optional<r_debug> read_dynamic_linker_rendezvous() const;
 
+    elf_collection& get_elves() { return elves_; }
+    const elf_collection& get_elves() const { return elves_; }
+    elf& get_main_elf() { return *main_elf_; }
+    const elf& get_main_elf() const { return *main_elf_; }
+
+    std::vector<line_table::iterator> get_line_entries_by_line(
+        std::filesystem::path path, std::size_t line) const;
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
-        : process_(std::move(proc)), elf_(std::move(obj)), stack_(this) {}
+        : process_(std::move(proc)), stack_(this), main_elf_(obj.get()) {
+        elves_.push(std::move(obj));
+    }
 
     /**
      * Locate the dynamic section of the inferior, read it;
@@ -108,13 +118,15 @@ class target {
     void reload_dynamic_libraries();
 
     std::unique_ptr<process> process_;
-    std::unique_ptr<elf> elf_;
 
     stack stack_;
 
     stoppoint_collection<breakpoint> breakpoints_;
 
     virt_addr dynamic_linker_rendezvous_address_;
+
+    elf_collection elves_;
+    elf* main_elf_;
 };
 }  // namespace gsdb
 
