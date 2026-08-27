@@ -771,3 +771,28 @@ To disable **lazy binding**, set the `BIND_NOW` flag in the ELF file’s `.dynam
 2. Walk through the loaded library list in the rendezvous structure, parsing the ELF files for every shared library noted there and adding them to a collection in sdb::target. We’ll also dump the vDSO to disk so we can reference it in the same way as other shared libraries.
 3. Set an internal breakpoint on the `_dl_debug_state` function, a pointer to which is stored in the `r_brk` member of the rendezvous structure.
 4. Whenever we hit the `_dl_debug_state` function breakpoint and the `r_state` member of the rendezvous structure is `RT_CONSISTENT`, reread `r_map`, adding any new shared libraries and unloading any ones that were removed.
+
+### Multithreading
+
+#### Threads on Linux
+
+The kernel implements _both_ (processes and threads) as **tasks**, which represent a single unit of execution for the scheduler.
+
+The key difference between a thread and a process is that _multiple threads_ can _share a single_ virtual address space, set of file descriptors, and set of signal handlers, whereas processes cannot.
+
+**TID**: thread ID.
+**TGID**: thread group ID, threads that belong to same process have the _same_ TGID, which is PID of the original process.
+
+**all-stopp mode** vs. **non-stop mode**:
+Debuggers generally operate in one of two modes:
+
+- **all-stop mode**, where the debugger must stop all threads before inspecting the program state, and
+- **non-stop mode**, where it can stop and inspect individual threads while others continue running.
+
+##### pthreads
+
+Linux creates threads with `clone` syscall, but it's too low level. Application programmers use the `pthreads` lib instead.
+
+##### ptrace and procfs
+
+`/proc/<pid>/task` has a subdirectory for every thread whose names is the TID of the thread.

@@ -1,6 +1,7 @@
 #ifndef GSDB_REGISTERS_HPP
 #define GSDB_REGISTERS_HPP
 
+#include <sys/types.h>
 #include <sys/user.h>
 
 #include <cstddef>
@@ -47,7 +48,7 @@ class registers {
     // only a gsdb::process should be able to construct an `gsdb::registers`
     // object, thus declared as `friend`
     friend process;
-    registers(process& proc) : proc_(&proc) {}
+    registers(process& proc, pid_t tid) : proc_(&proc), tid_(tid) {}
 
     user data_;
     process* proc_;
@@ -59,6 +60,7 @@ class registers {
      */
     std::vector<std::size_t> undefined_;
     virt_addr cfa_;
+    pid_t tid_;
 };
 }  // namespace gsdb
 

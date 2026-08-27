@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,13 @@
 #include "libgsdb/types.hpp"
 
 namespace gsdb {
+struct thread {
+    thread(thread_state* state, stack frames)
+        : state(state), frames(std::move(frames)) {}
+
+    thread_state* state;
+    stack frames;
+};
 /**
  * Manage the symbolic level of the program that we’re debugging, such as
  * storing the `gsdb::elf` object for the program, reading debug information,
@@ -55,8 +63,8 @@ class target {
      */
     file_addr get_pc_file_address() const;
 
-    stack& get_stack() { return stack_; }
-    const stack& get_stack() const { return stack_; }
+    // stack& get_stack() { return stack_; }
+    // const stack& get_stack() const { return stack_; }
 
     stop_reason step_in();
     stop_reason step_out();
@@ -102,10 +110,24 @@ class target {
     std::vector<line_table::iterator> get_line_entries_by_line(
         std::filesystem::path path, std::size_t line) const;
 
+    std::unordered_map<pid_t, thread>& threads() { return threads_; }
+    const std::unordered_map<pid_t, thread>& threads() const {
+        return threads_;
+    }
+
+    /**
+     * Notify the target that a new thread has been created/terminated
+     */
+    void notify_thread_lifecycle_event(const stop_reason& reason);
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
-        : process_(std::move(proc)), stack_(this), main_elf_(obj.get()) {
+        : process_(std::move(proc)), main_elf_(obj.get()) {
         elves_.push(std::move(obj));
+        auto pid = process_->pid();
+        for (auto& [tid, state] : process_->thread_states()) {
+            threads_.emplace(tid, thread(&state, stack{this, tid}));
+        }
     }
 
     /**
@@ -119,7 +141,7 @@ class target {
 
     std::unique_ptr<process> process_;
 
-    stack stack_;
+    // stack stack_;
 
     stoppoint_collection<breakpoint> breakpoints_;
 
@@ -127,6 +149,8 @@ class target {
 
     elf_collection elves_;
     elf* main_elf_;
+
+    std::unordered_map<pid_t, thread> threads_;
 };
 }  // namespace gsdb
 

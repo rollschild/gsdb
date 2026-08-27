@@ -33,6 +33,7 @@ enum class trap_type {
     software_break,
     hardware_break,
     syscall,
+    clone,
     unknown,
 };
 
@@ -46,15 +47,17 @@ struct syscall_information {
 };
 
 struct stop_reason {
-    stop_reason(int wait_status);
     stop_reason() = default;
-    stop_reason(process_state reason, std::uint8_t info,
+    stop_reason(pid_t tid, int wait_status);
+
+    stop_reason(pid_t tid, process_state reason, std::uint8_t info,
                 std::optional<trap_type> trap_reason = std::nullopt,
                 std::optional<syscall_information> syscall_info = std::nullopt)
         : reason(reason),
           info(info),
           trap_reason(trap_reason),
-          syscall_info(syscall_info) {}
+          syscall_info(syscall_info),
+          tid(tid) {}
 
     bool is_step() const {
         return reason == process_state::stopped and info == SIGTRAP and
@@ -71,6 +74,14 @@ struct stop_reason {
     std::uint8_t info;  // coming from `waitpid()`
     std::optional<trap_type> trap_reason;
     std::optional<syscall_information> syscall_info;
+    pid_t tid;
+};
+
+struct thread_state {
+    pid_t tid;
+    registers regs;
+    stop_reason reason;
+    process_state state = process_state::stopped;
 };
 
 class syscall_catch_policy {
@@ -206,6 +217,16 @@ class process {
 
     void set_target(target* tgt) { target_ = tgt; }
 
+    void set_current_thread(pid_t tid) { current_thread_ = tid; }
+    pid_t current_thread() const { return current_thread_; }
+
+    std::unordered_map<pid_t, thread_state>& thread_states() {
+        return threads_;
+    }
+    const std::unordered_map<pid_t, thread_state>& thread_states() const {
+        return threads_;
+    }
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -213,7 +234,16 @@ class process {
         : pid_(pid),
           terminate_on_end_(terminate_on_end),
           is_attached_(is_attached),
-          registers_(new registers(*this)) {}
+          current_thread_(pid) {
+        populate_existing_threads();
+    }
+
+    /**
+     * Read the contents of `/proc/<pid>/task` and create `gsdb::thread_state`
+     * objects for each of the listed TIDs
+     */
+    void populate_existing_threads();
+
     pid_t pid_ = 0;
     bool terminate_on_end_ = true;
     process_state state_ = process_state::stopped;
@@ -240,6 +270,9 @@ class process {
     bool expecting_syscall_exit_ = false;
 
     target* target_ = nullptr;
+
+    std::unordered_map<pid_t, thread_state> threads_;
+    pid_t current_thread_ = 0;
 };
 }  // namespace gsdb
 

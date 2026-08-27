@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <libgsdb/error.hpp>
@@ -31,6 +32,7 @@
 #include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/pipe.hpp"
 #include "libgsdb/register_info.hpp"
+#include "libgsdb/registers.hpp"
 #include "libgsdb/types.hpp"
 #include "libgsdb/watchpoint.hpp"
 
@@ -47,8 +49,12 @@ void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
  * syscall.
  */
 void set_ptrace_options(pid_t pid) {
-    if (ptrace(PTRACE_SETOPTIONS, pid, nullptr, PTRACE_O_TRACESYSGOOD) < 0) {
-        gsdb::error::send_errno("Failed to set TRACESYSGOOD option!");
+    // PTRACE_O_TRACECLONE: kernel sends a SIGTRAP to any thread that spans a
+    // new thread and sends a SIGSTOP to the new thread
+    if (ptrace(PTRACE_SETOPTIONS, pid, nullptr,
+               PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACECLONE) < 0) {
+        gsdb::error::send_errno(
+            "Failed to set TRACESYSGOOD and TRACECLONE options!");
     }
 }
 
@@ -162,7 +168,11 @@ void gsdb::process::resume() {
     state_ = process_state::running;
 }
 
-gsdb::stop_reason::stop_reason(int wait_status) {
+gsdb::stop_reason::stop_reason(pid_t tid, int wait_status) : tid(tid) {
+    if ((wait_status >> 8) == (SIGTRAP | (PTRACE_EVENT_CLONE << 8))) {
+        // the SIGTRAP was due to a new thread being created
+        trap_reason = trap_type::clone;
+    }
     if (WIFEXITED(wait_status)) {
         reason = process_state::exited;
         info = WEXITSTATUS(wait_status);
@@ -707,4 +717,12 @@ std::unordered_map<int, std::uint64_t> gsdb::process::get_auxv() const {
     }
 
     return ret;
+}
+
+void gsdb::process::populate_existing_threads() {
+    auto path = "/proc/" + std::to_string(pid_) + "/task";
+    for (auto& entry : std::filesystem::directory_iterator(path)) {
+        auto tid = std::stoi(entry.path().filename().string());
+        threads_.emplace(tid, thread_state{tid, registers(*this, tid)});
+    }
 }

@@ -1,6 +1,8 @@
 #ifndef GSDB_STACK_HPP
 #define GSDB_STACK_HPP
 
+#include <sys/types.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <libgsdb/dwarf.hpp>
@@ -22,7 +24,7 @@ struct stack_frame {
 
 class stack {
    public:
-    stack(target* tgt) : target_(tgt) {}
+    stack(target* tgt, pid_t tid) : target_(tgt), tid_(tid) {}
     /**
      * Called whenever process halts
      */
@@ -58,6 +60,8 @@ class stack {
     const registers& regs() const;
     virt_addr get_pc() const;
 
+    pid_t tid() const { return tid_; }
+
    private:
     void create_inline_stack_frames(const gsdb::registers& regs,
                                     const std::vector<gsdb::die> inline_stack,
@@ -72,6 +76,8 @@ class stack {
     std::vector<stack_frame> frames_;
     // the frame that the debugger is currently examining
     std::size_t current_frame_ = 0;
+
+    pid_t tid_ = 0;
 };
 }  // namespace gsdb
 

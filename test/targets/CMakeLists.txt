@@ -26,6 +26,7 @@ add_test_cpp_target(anti_debugger)
 add_test_cpp_target(overloaded)
 add_test_cpp_target(step)
 add_test_cpp_target(marshmallow)
+add_test_cpp_target(multi_threaded)
 
 # SHARED: build a shared lib, rather than a static one
 add_library(meow SHARED "libmeow.cpp")
@@ -40,3 +41,5 @@ add_dependencies(tests multi_cu)
 # -fPIC: tell compiler to output position-independent code
 target_compile_options(meow PRIVATE -g -O0 -fPIC -gdwarf-4)
 target_link_libraries(marshmallow PRIVATE meow)
+
+target_link_libraries(multi_threaded pthread)
