@@ -78,8 +78,8 @@ gsdb::registers::value gsdb::registers::read(const register_info& info) const {
  * Write all GPRs, FPRs, and debug registers
  */
 void gsdb::registers::flush() {
-    proc_->write_fprs(data_.i387);
-    proc_->write_gprs(data_.regs);
+    proc_->write_fprs(data_.i387, tid_);
+    proc_->write_gprs(data_.regs, tid_);
     auto info = register_info_by_id(register_id::dr0);
     // Loop 8 times, one for each debug register
     // %dr0 - %dr7, for hardware breakpoints/watchpoints
@@ -89,7 +89,7 @@ void gsdb::registers::flush() {
         auto reg_offset = info.offset + sizeof(std::uint64_t) * i;
         auto ptr = reinterpret_cast<std::byte*>(data_.u_debugreg + i);
         auto bytes = from_bytes<std::uint64_t>(ptr);
-        proc_->write_user_area(reg_offset, bytes);
+        proc_->write_user_area(reg_offset, bytes, tid_);
     }
 }
 
@@ -117,15 +117,16 @@ void gsdb::registers::write(const register_info& info, value val, bool commit) {
     // Write the new register to the new process only if commit is true
     if (commit) {
         if (info.type == register_type::fpr) {
-            proc_->write_fprs(data_.i387);
+            proc_->write_fprs(data_.i387, tid_);
         } else {
             // PTRACE_PEEKUSER and PTRACE_POKEUSER require the addresses to
             // align to 8 bytes The high 8-bit registers are offset by a byte
             // into the superregister, so they aren’t aligned
             auto aligned_offset =
                 info.offset & ~0b111;  // make it divisible by 8
-            proc_->write_user_area(aligned_offset, from_bytes<std::uint64_t>(
-                                                       bytes + aligned_offset));
+            proc_->write_user_area(
+                aligned_offset,
+                from_bytes<std::uint64_t>(bytes + aligned_offset), tid_);
         }
     }
 }

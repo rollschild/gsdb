@@ -115,13 +115,13 @@ class process {
         std::optional<int> stdout_replacement = std::nullopt);
     static std::unique_ptr<process> attach(pid_t pid);
 
-    void resume();
-    stop_reason wait_on_signal();
+    void resume(std::optional<pid_t> otid = std::nullopt);
+    void wait_on_signal(pid_t to_wait = -1);
     /**
      * Returns a stop reason that describes why the process halted after
      * stepping
      */
-    stop_reason step_instruction();
+    stop_reason step_instruction(std::optional<pid_t> otid = std::nullopt);
     pid_t pid() const { return pid_; }
     process_state state() const { return state_; }
 
@@ -131,28 +131,25 @@ class process {
 
     ~process();
 
-    registers& get_registers() { return *registers_; }
-    const registers& get_registers() const { return *registers_; }
+    registers& get_registers(std::optional<pid_t> otid = std::nullopt);
+    const registers& get_registers(
+        std::optional<pid_t> otid = std::nullopt) const;
 
     /**
      * Get program counter
      */
-    virt_addr get_pc() const {
-        return virt_addr{
-            get_registers().read_by_id_as<std::uint64_t>(register_id::rip)};
-    }
-
+    virt_addr get_pc(std::optional<pid_t> otid = std::nullopt) const;
     /**
      * Set program pointer
      */
-    void set_pc(virt_addr address) {
-        get_registers().write_by_id(register_id::rip, address.addr());
-    }
+    void set_pc(virt_addr address, std::optional<pid_t> otid = std::nullopt);
+    void write_user_area(std::size_t offset, std::uint64_t data,
+                         std::optional<pid_t> otid = std::nullopt);
 
-    void write_user_area(std::size_t offset, std::uint64_t data);
-
-    void write_fprs(const user_fpregs_struct& fprs);
-    void write_gprs(const user_regs_struct& gprs);
+    void write_fprs(const user_fpregs_struct& fprs,
+                    std::optional<pid_t> otid = std::nullopt);
+    void write_gprs(const user_regs_struct& gprs,
+                    std::optional<pid_t> otid = std::nullopt);
 
     /**
      * Create a breakpoint site at a give virtual address
@@ -203,7 +200,8 @@ class process {
                        stoppoint_mode mode, std::size_t size);
 
     std::variant<breakpoint_site::id_type, watchpoint::id_type>
-    get_current_hardware_stoppoint() const;
+    get_current_hardware_stoppoint(
+        std::optional<pid_t> otid = std::nullopt) const;
 
     void set_syscall_catch_policy(syscall_catch_policy info) {
         syscall_catch_policy_ = std::move(info);
@@ -250,7 +248,7 @@ class process {
     bool is_attached_ = true;
 
     // populate registers_ when the process halts
-    void read_all_registers();
+    void read_all_registers(pid_t tid);
     std::unique_ptr<registers> registers_;
 
     // std::vector<std::unique_ptr<breakpoint_site>> breakpoint_sites_;
@@ -262,7 +260,7 @@ class process {
                                std::size_t size);
 
     void augment_stop_reason(stop_reason& reason);
-    stop_reason maybe_resume_from_syscall(const stop_reason& reason);
+    bool should_resume_from_syscall(const stop_reason& reason);
 
     syscall_catch_policy syscall_catch_policy_ =
         syscall_catch_policy::catch_none();

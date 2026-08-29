@@ -134,23 +134,41 @@ gsdb::process::~process() {
     }
 }
 
+gsdb::virt_addr gsdb::process::get_pc(std::optional<pid_t> otid) const {
+    return virt_addr{
+        get_registers(otid).read_by_id_as<std::uint64_t>(register_id::rip)};
+}
+void gsdb::process::set_pc(gsdb::virt_addr address, std::optional<pid_t> otid) {
+    get_registers(otid).write_by_id(register_id::rip, address.addr());
+}
+
+gsdb::registers& gsdb::process::get_registers(std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    return threads_.at(tid).regs;
+}
+const gsdb::registers& gsdb::process::get_registers(
+    std::optional<pid_t> otid) const {
+    return const_cast<process*>(this)->get_registers(otid);
+}
+
 /**
  * Force the process to resume and update its tracked running state
  */
-void gsdb::process::resume() {
-    auto pc = get_pc();
+void gsdb::process::resume(std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    auto pc = get_pc(tid);
     // First, check if we are at breakpoint
     if (breakpoint_sites_.enabled_stoppoint_at_address(pc)) {
         auto& bp = breakpoint_sites_.get_by_address(pc);
         // if at breakpoint, disable it
         bp.disable();
-        if (ptrace(PTRACE_SINGLESTEP, pid_, nullptr, nullptr) < 0) {
+        if (ptrace(PTRACE_SINGLESTEP, tid, nullptr, nullptr) < 0) {
             // execute a single instruction
             error::send_errno("Failed to single step!");
         }
         int wait_status;
         // wait until the inferior has executed the instruction and halted
-        if (waitpid(pid_, &wait_status, 0) < 0) {
+        if (waitpid(tid, &wait_status, 0) < 0) {
             error::send_errno("waitpid failed!");
         }
         // re-enable the breakpoint - patch 0xcc back in, before continuing the
@@ -162,9 +180,11 @@ void gsdb::process::resume() {
             ? PTRACE_CONT
             : PTRACE_SYSCALL;  // Now the inferior will trap whenever a syscall
                                // is entered or exited
-    if (ptrace(request, pid_, nullptr, nullptr) < 0) {
+    if (ptrace(request, tid, nullptr, nullptr) < 0) {
         error::send_errno("Could NOT resume");
     }
+    // set the state of the thread on which it operated
+    threads_.at(tid).state = process_state::running;
     state_ = process_state::running;
 }
 
@@ -337,12 +357,12 @@ std::unique_ptr<gsdb::process> gsdb::process::attach(pid_t pid) {
     return proc;
 }
 
-void gsdb::process::read_all_registers() {
-    if (ptrace(PTRACE_GETREGS, pid_, nullptr, &get_registers().data_.regs) <
+void gsdb::process::read_all_registers(pid_t tid) {
+    if (ptrace(PTRACE_GETREGS, tid, nullptr, &get_registers(tid).data_.regs) <
         0) {
         error::send_errno("Could not read GPR registers");
     }
-    if (ptrace(PTRACE_GETFPREGS, pid_, nullptr, &get_registers().data_.i387) <
+    if (ptrace(PTRACE_GETFPREGS, tid, nullptr, &get_registers(tid).data_.i387) <
         0) {
         error::send_errno("Could not read FPR registers");
     }
@@ -353,32 +373,37 @@ void gsdb::process::read_all_registers() {
 
         errno = 0;
 
-        std::uint64_t data =
-            ptrace(PTRACE_PEEKUSER, pid_, info.offset, nullptr);
+        std::int64_t data = ptrace(PTRACE_PEEKUSER, tid, info.offset, nullptr);
         if (errno != 0) {
             error::send_errno(
                 std::format("Could not read debug register {:d}", i));
         }
-        get_registers().data_.u_debugreg[i] = data;
+        get_registers(tid).data_.u_debugreg[i] = data;
     }
 }
 
 /**
  * write the given data to the user area at the given offset.
  */
-void gsdb::process::write_user_area(std::size_t offset, std::uint64_t data) {
-    if (ptrace(PTRACE_POKEUSER, pid_, offset, data) < 0) {
+void gsdb::process::write_user_area(std::size_t offset, std::uint64_t data,
+                                    std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    if (ptrace(PTRACE_POKEUSER, tid, offset, data) < 0) {
         error::send_errno("Could not write to user area");
     }
 }
 
-void gsdb::process::write_fprs(const user_fpregs_struct& fprs) {
-    if (ptrace(PTRACE_SETFPREGS, pid_, nullptr, &fprs) < 0) {
+void gsdb::process::write_fprs(const user_fpregs_struct& fprs,
+                               std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    if (ptrace(PTRACE_SETFPREGS, tid, nullptr, &fprs) < 0) {
         error::send_errno("Could not write floating point registers");
     }
 }
-void gsdb::process::write_gprs(const user_regs_struct& gprs) {
-    if (ptrace(PTRACE_SETREGS, pid_, nullptr, &gprs) < 0) {
+void gsdb::process::write_gprs(const user_regs_struct& gprs,
+                               std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    if (ptrace(PTRACE_SETREGS, tid, nullptr, &gprs) < 0) {
         error::send_errno("Could not write general purpose registers");
     }
 }
@@ -405,10 +430,11 @@ gsdb::breakpoint_site& gsdb::process::create_breakpoint_site(
         new breakpoint_site(parent, id, *this, address, hardware, internal)));
 }
 
-gsdb::stop_reason gsdb::process::step_instruction() {
+gsdb::stop_reason gsdb::process::step_instruction(std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
     // track the breakpoint site at which the process is currently stopped
     std::optional<breakpoint_site*> to_reenable;
-    auto pc = get_pc();
+    auto pc = get_pc(tid);
     if (breakpoint_sites_.enabled_stoppoint_at_address(pc)) {
         // we must declare bp as a reference, so that we can safely store a
         // pointer to it in a variable declared in the enclosing scope
@@ -417,12 +443,12 @@ gsdb::stop_reason gsdb::process::step_instruction() {
         to_reenable = &bp;
     }
 
-    if (ptrace(PTRACE_SINGLESTEP, pid_, nullptr, nullptr) < 0) {
+    if (ptrace(PTRACE_SINGLESTEP, tid, nullptr, nullptr) < 0) {
         error::send_errno("Could not single step!");
     }
 
     // wait until the single step over is completed
-    auto reason = wait_on_signal();
+    auto reason = wait_on_signal(tid);
     if (to_reenable) {
         to_reenable.value()->enable();
     }
@@ -528,6 +554,11 @@ int gsdb::process::set_hardware_breakpoint(
     return set_hardware_stoppoint(address, stoppoint_mode::execute, 1);
 }
 
+/**
+ * Claim one of the CPU's four debug-address slots, point it at an address, and
+ * encode what should trigger a trap there. Nothing else in the debugger touches
+ * DR registers directly.
+ */
 int gsdb::process::set_hardware_stoppoint(gsdb::virt_addr address,
                                           stoppoint_mode mode,
                                           std::size_t size) {
@@ -548,9 +579,9 @@ int gsdb::process::set_hardware_stoppoint(gsdb::virt_addr address,
     auto mode_flag = encode_hardware_stoppoint_mode(mode);
     auto size_flag = encode_hardware_stoppoint_size(size);
 
-    auto enable_bit = (1 << (free_space * 2));
-    auto mode_bits = (mode_flag << (free_space * 4 + 16));
-    auto size_bits = (size_flag << (free_space * 4 + 18));
+    auto enable_bit = (1 << (free_space * 2));              // L<n>
+    auto mode_bits = (mode_flag << (free_space * 4 + 16));  // R/W<n>
+    auto size_bits = (size_flag << (free_space * 4 + 18));  // LEN<n>
 
     auto clear_mask =
         (0b11 << (free_space * 2)) | (0b1111 << (free_space * 4 + 16));
@@ -559,6 +590,18 @@ int gsdb::process::set_hardware_stoppoint(gsdb::virt_addr address,
     masked |= enable_bit | mode_bits | size_bits;
 
     regs.write_by_id(register_id::dr7, masked);
+
+    // DR registers are per-thread state, not per-process — the kernel
+    // saves/restores them on context switch. A breakpoint armed only in thread
+    // A's DR file simply won't fire in thread B. So the loop replays both
+    // writes (slot address + DR7) onto every other tracked thread, skipping
+    // current_thread_ since step 3/5 already handled it.
+    for (auto& [tid, _] : threads_) {
+        if (tid == current_thread_) continue;
+        auto& other_regs = get_registers(tid);
+        other_regs.write_by_id(static_cast<register_id>(id), address.addr());
+        other_regs.write_by_id(register_id::dr7, masked);
+    }
 
     return free_space;
 }
@@ -575,6 +618,13 @@ void gsdb::process::clear_hardware_stoppoint(int index) {
     auto masked = control & ~clear_mask;
 
     get_registers().write_by_id(register_id::dr7, masked);
+
+    for (auto& [tid, _] : threads_) {
+        if (tid == current_thread_) continue;
+        auto& other_regs = get_registers(tid);
+        other_regs.write_by_id(static_cast<register_id>(id), 0);
+        other_regs.write_by_id(register_id::dr7, masked);
+    }
 }
 
 int gsdb::process::set_watchpoint([[maybe_unused]] gsdb::watchpoint::id_type id,
@@ -595,8 +645,9 @@ gsdb::watchpoint& gsdb::process::create_watchpoint(virt_addr address,
 }
 
 void gsdb::process::augment_stop_reason(gsdb::stop_reason& reason) {
+    auto tid = reason.tid;
     siginfo_t info;
-    if (ptrace(PTRACE_GETSIGINFO, pid_, nullptr, &info) < 0) {
+    if (ptrace(PTRACE_GETSIGINFO, tid, nullptr, &info) < 0) {
         error::send_errno("Failed to get signal info!");
     }
 
@@ -607,7 +658,7 @@ void gsdb::process::augment_stop_reason(gsdb::stop_reason& reason) {
         // Returns a non-const ref (T&) to the newly-built object that now lives
         // inside the optional
         auto& sys_info = reason.syscall_info.emplace();
-        auto& regs = get_registers();
+        auto& regs = get_registers(tid);
 
         if (expecting_syscall_exit_) {
             sys_info.entry = false;
@@ -657,12 +708,12 @@ void gsdb::process::augment_stop_reason(gsdb::stop_reason& reason) {
 }
 
 std::variant<gsdb::breakpoint_site::id_type, gsdb::watchpoint::id_type>
-gsdb::process::get_current_hardware_stoppoint() const {
-    auto& regs = get_registers();
+gsdb::process::get_current_hardware_stoppoint(std::optional<pid_t> otid) const {
+    auto& regs = get_registers(otid);
     auto status = regs.read_by_id_as<std::uint64_t>(gsdb::register_id::dr6);
-    // find which bit of the least significant 4 bits is set by couting trailing
-    // zeros
-    // (unsigned long long) flavor of the `__builtin_ctz` function
+    // find which bit of the least significant 4 bits is set by counting
+    // trailing zeros (unsigned long long) flavor of the `__builtin_ctz`
+    // function
     auto index = __builtin_ctzll(status);
 
     auto id = static_cast<int>(gsdb::register_id::dr0) + index;
@@ -685,19 +736,18 @@ gsdb::process::get_current_hardware_stoppoint() const {
 /**
  * Resume if the current syscall is the one we are catching
  */
-gsdb::stop_reason gsdb::process::maybe_resume_from_syscall(
-    const stop_reason& reason) {
+bool gsdb::process::should_resume_from_syscall(const stop_reason& reason) {
     if (syscall_catch_policy_.get_mode() == syscall_catch_policy::mode::some) {
         auto& to_catch = syscall_catch_policy_.get_to_catch();
         auto found = std::find(std::begin(to_catch), std::end(to_catch),
                                reason.syscall_info->id);
         if (found == std::end(to_catch)) {
-            resume();
-            return wait_on_signal();
+            // resume();
+            return true;
         }
     }
 
-    return reason;
+    return false;
 }
 
 std::unordered_map<int, std::uint64_t> gsdb::process::get_auxv() const {
