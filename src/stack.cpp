@@ -11,7 +11,7 @@
 
 std::vector<gsdb::die> gsdb::stack::inline_stack_at_pc() const {
     // program counter as file address
-    auto pc = target_->get_pc_file_address();
+    auto pc = target_->get_pc_file_address(tid_);
     if (!pc.elf_file()) {
         return {};
     }
@@ -59,10 +59,10 @@ void gsdb::stack::unwind() {
     // so the selected frame is the first visible one
     current_frame_ = inline_height_;
 
-    auto virt_pc = target_->get_process().get_pc();
-    auto file_pc = target_->get_pc_file_address();
+    auto virt_pc = target_->get_process().get_pc(tid_);
+    auto file_pc = target_->get_pc_file_address(tid_);
     auto& proc = target_->get_process();
-    auto regs = proc.get_registers();
+    auto regs = proc.get_registers(tid_);
 
     frames_.clear();
 

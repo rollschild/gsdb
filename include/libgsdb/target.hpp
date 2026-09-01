@@ -61,17 +61,34 @@ class target {
     /**
      * Convert the program counter from virtual address to file address
      */
-    file_addr get_pc_file_address() const;
+    file_addr get_pc_file_address(
+        std::optional<pid_t> otid = std::nullopt) const;
 
-    // stack& get_stack() { return stack_; }
-    // const stack& get_stack() const { return stack_; }
+    // Meyers const-overload
+    // stack& get_stack(std::optional<pid_t> otid = std::nullopt) {
+    //     return const_cast<stack&>(
+    //         static_cast<const target&>(*this).get_stack(otid));
+    // }
+    // const stack& get_stack(std::optional<pid_t> otid = std::nullopt) const {
+    //     auto tid = otid.value_or(process_->current_thread());
+    //     return threads_.at(tid).frames;
+    // }
 
-    stop_reason step_in();
-    stop_reason step_out();
-    stop_reason step_over();
+    // `self` deduces as `target&` or `const target&`
+    // C++23
+    auto& get_stack(this auto& self, std::optional<pid_t> otid = std::nullopt) {
+        auto tid = otid.value_or(self.process_->current_thread());
+        return self.threads_.at(tid).frames;
+    }
 
-    gsdb::line_table::iterator line_entry_at_pc() const;
-    gsdb::stop_reason run_until_address(virt_addr address);
+    stop_reason step_in(std::optional<pid_t> otid = std::nullopt);
+    stop_reason step_out(std::optional<pid_t> otid = std::nullopt);
+    stop_reason step_over(std::optional<pid_t> otid = std::nullopt);
+
+    gsdb::line_table::iterator line_entry_at_pc(
+        std::optional<pid_t> otid = std::nullopt) const;
+    gsdb::stop_reason run_until_address(
+        virt_addr address, std::optional<pid_t> otid = std::nullopt);
 
     struct find_functions_result {
         std::vector<die> dwarf_functions;
@@ -124,7 +141,7 @@ class target {
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), main_elf_(obj.get()) {
         elves_.push(std::move(obj));
-        auto pid = process_->pid();
+        [[maybe_unused]] auto pid = process_->pid();
         for (auto& [tid, state] : process_->thread_states()) {
             threads_.emplace(tid, thread(&state, stack{this, tid}));
         }
