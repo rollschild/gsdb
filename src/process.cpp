@@ -151,17 +151,25 @@ const gsdb::registers& gsdb::process::get_registers(
     return const_cast<process*>(this)->get_registers(otid);
 }
 
-/**
- * Force the process to resume and update its tracked running state
- */
-void gsdb::process::resume(std::optional<pid_t> otid) {
-    auto tid = otid.value_or(current_thread_);
+void gsdb::process::swallow_pending_sigstop(pid_t tid) {
+    if (threads_.at(tid).pending_sigstop) {
+        // if a thread has pending SIGSTOP, continue it
+        ptrace(PTRACE_CONT, tid, nullptr, nullptr);
+        // to consume the signal
+        waitpid(tid, nullptr, 0);
+        threads_.at(tid).pending_sigstop = false;
+    }
+}
+
+void gsdb::process::step_over_breakpoint(pid_t tid) {
     auto pc = get_pc(tid);
     // First, check if we are at breakpoint
     if (breakpoint_sites_.enabled_stoppoint_at_address(pc)) {
         auto& bp = breakpoint_sites_.get_by_address(pc);
         // if at breakpoint, disable it
         bp.disable();
+        // swallow any pending `SIGSTOP`s if a thread is single-stepped
+        swallow_pending_sigstop(tid);
         if (ptrace(PTRACE_SINGLESTEP, tid, nullptr, nullptr) < 0) {
             // execute a single instruction
             error::send_errno("Failed to single step!");
@@ -175,6 +183,9 @@ void gsdb::process::resume(std::optional<pid_t> otid) {
         // process and setting the state to running
         bp.enable();
     }
+}
+
+void gsdb::process::send_continue(pid_t tid) {
     auto request =
         syscall_catch_policy_.get_mode() == syscall_catch_policy::mode::none
             ? PTRACE_CONT
@@ -186,6 +197,24 @@ void gsdb::process::resume(std::optional<pid_t> otid) {
     // set the state of the thread on which it operated
     threads_.at(tid).state = process_state::running;
     state_ = process_state::running;
+}
+
+void gsdb::process::resume_all_threads() {
+    for (auto& [tid, _] : threads_) {
+        step_over_breakpoint(tid);
+    }
+    for (auto& [tid, _] : threads_) {
+        send_continue(tid);
+    }
+}
+
+/**
+ * Force the process to resume and update its tracked running state
+ */
+void gsdb::process::resume(std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    step_over_breakpoint(tid);
+    send_continue(tid);
 }
 
 gsdb::stop_reason::stop_reason(pid_t tid, int wait_status) : tid(tid) {
@@ -205,57 +234,193 @@ gsdb::stop_reason::stop_reason(pid_t tid, int wait_status) : tid(tid) {
     }
 }
 
-gsdb::stop_reason gsdb::process::wait_on_signal() {
-    int wait_status;
-    int options = 0;
-    if (waitpid(pid_, &wait_status, options) < 0) {
-        error::send_errno("waitpid FAILED");
-    }
-    stop_reason reason(wait_status);
-    state_ = reason.reason;
+/**
+ * Record any new threads the program spawns, handle pending SIGSTOPs, compute
+ * stop reasons, and handle stop points.
+ */
+std::optional<gsdb::stop_reason> gsdb::process::handle_signal(
+    gsdb::stop_reason reason, bool is_main_stop) {
+    auto tid = reason.tid;
 
-    // read all registers so long as we are attached to this process and
-    // it is stopped
-    if (is_attached_ and state_ == process_state::stopped) {
-        read_all_registers();
+    // due to a clone event - because a thread was created,
+    // and this signal caused the original stop
+    if (reason.trap_reason and *reason.trap_reason == trap_type::clone and
+        is_main_stop) {
+        // immediately return and restart the thread
+        return std::nullopt;
+    }
+
+    if (is_attached_ and reason.reason == process_state::stopped) {
+        if (!threads_.count(tid)) {  // isn't being tracked by the process yet
+            // then a new thread must have been created
+            threads_.emplace(
+                tid, thread_state{tid, registers(*this, tid), stop_reason{}});
+            report_thread_lifecycle_event(reason);
+            if (is_main_stop) {
+                return std::nullopt;
+            }
+        }
+
+        if (threads_.at(tid).pending_sigstop and reason.info == SIGSTOP) {
+            // if the signal intercepted was a `SIGSTOP` and thread to which it
+            // was sent has a pending `SIGSTOP`, reset the `SIGSTOP` field,
+            // return, and restart the thread
+            threads_.at(tid).pending_sigstop = false;
+            return std::nullopt;
+        }
+
+        // most likely reporting a stop for this signal
+        read_all_registers(tid);
         augment_stop_reason(reason);
 
-        // If process stopped due to `SIGTRAP` and the address 1 byte below the
-        // program counter is an enabled breakpoint, we should fix up the
-        // program counter to point to the breakpoint
-        auto instr_begin = get_pc() - 1;
+        // Now handle breakpoints, watchpoints, and syscall traps
         if (reason.info == SIGTRAP) {
+            auto instr_begin = get_pc(tid) - 1;
             if (reason.trap_reason == trap_type::software_break and
                 breakpoint_sites_.contains_address(instr_begin) and
                 breakpoint_sites_.get_by_address(instr_begin).is_enabled()) {
-                // if caused by software breakpoint, walk the program counter
-                // back 1 byte to the start of the `int3` instruction
-                set_pc(instr_begin);
+                set_pc(instr_begin, tid);
 
                 auto& bp = breakpoint_sites_.get_by_address(instr_begin);
                 if (bp.parent_) {
                     bool should_restart = bp.parent_->notify_hit();
-                    if (should_restart) {
-                        resume();
-                        return wait_on_signal();
+                    if (should_restart and is_main_stop) {
+                        return std::nullopt;
                     }
                 }
             } else if (reason.trap_reason == trap_type::hardware_break) {
-                // if caused by hardware stoppoint
-                auto id = get_current_hardware_stoppoint();
-                // id is a variant -> check if it's watchpoint
+                auto id = get_current_hardware_stoppoint(tid);
                 if (id.index() == 1) {
                     watchpoints_.get_by_id(std::get<1>(id)).update_data();
                 }
-            } else if (reason.trap_reason == trap_type::syscall) {
-                reason = maybe_resume_from_syscall(reason);
+            } else if (reason.trap_reason == trap_type::syscall and
+                       is_main_stop and should_resume_from_syscall(reason)) {
+                return std::nullopt;
             }
         }
+
         if (target_) {
+            // notify the target of the stop so it can unwind the thread's stack
             target_->notify_stop(reason);
         }
     }
 
+    return reason;
+}
+
+void gsdb::process::stop_running_threads() {
+    for (auto& [tid, thread] : threads_) {
+        if (thread.state == process_state::running) {
+            if (!thread.pending_sigstop) {
+                // do NOT use `kill` here, as it sends a signal to the entire
+                // process rather than to a single thread
+                tgkill(pid_, tid, SIGSTOP);
+            }
+
+            int wait_status;
+            waitpid(tid, &wait_status, 0);
+
+            stop_reason thread_reason(tid, wait_status);
+            if (thread_reason.reason == process_state::stopped) {
+                // if process wsa stopped due to a signal: two possibilities we
+                // care about
+                if (thread_reason.info != SIGSTOP) {
+                    thread.pending_sigstop = true;
+                } else if (thread.pending_sigstop) {
+                    thread.pending_sigstop = false;
+                }
+            }
+
+            // `handle_signal` should never mandate a thread restart for threads
+            // other than the one that caused the original stop
+            thread_reason =
+                handle_signal(thread_reason, false).value_or(thread_reason);
+            threads_.at(tid).reason = thread_reason;
+            threads_.at(tid).state = thread_reason.reason;
+        }
+    }
+}
+
+void gsdb::process::report_thread_lifecycle_event(const stop_reason& reason) {
+    if (thread_lifecycle_callback_) {
+        thread_lifecycle_callback_(reason);
+    }
+    if (target_) {
+        target_->notify_thread_lifecycle_event(reason);
+    }
+}
+
+std::optional<gsdb::stop_reason> gsdb::process::cleanup_exited_threads(
+    pid_t main_stop_tid) {
+    std::vector<pid_t> to_remove;
+    std::optional<stop_reason> to_report;
+
+    for (auto& [tid, thread] : threads_) {
+        if (tid != main_stop_tid and
+            (thread.state == process_state::exited or
+             thread.state == process_state::terminated)) {
+            report_thread_lifecycle_event(thread.reason);
+            to_remove.push_back(tid);
+            if (tid == pid_) {
+                // in the case that we find that the main thread has exited
+                to_report = thread.reason;
+            }
+        }
+    }
+
+    for (auto tid : to_remove) {
+        threads_.erase(tid);
+    }
+
+    return to_report;
+}
+
+gsdb::stop_reason gsdb::process::wait_on_signal(pid_t to_await) {
+    int wait_status;
+    int options =
+        __WALL;  // tells `waitpid` to wait on both processes and threads
+    pid_t tid;
+    // on `to_await = -1`: function should wait until any child has changed
+    // state;
+    // return value `tid`: TID of the thread whose state has changed
+    if ((tid = waitpid(to_await, &wait_status, options)) < 0) {
+        error::send_errno("waitpid FAILED");
+    }
+    // initial stop reason
+    stop_reason reason(tid, wait_status);
+    auto final_reason = handle_signal(reason, true);
+    if (!final_reason) {
+        // resume the stopped thread, if `handle_signal` returns empty optional
+        resume(tid);
+        return wait_on_signal(to_await);
+    }
+
+    reason = *final_reason;
+    auto& thread = threads_.at(tid);
+    thread.reason = reason;
+    thread.state = reason.reason;
+
+    if (reason.reason == process_state::exited or
+        reason.reason == process_state::terminated) {
+        report_thread_lifecycle_event(reason);
+        if (tid == pid_) {
+            // if main thread ended, report that the process itself has finished
+            state_ = reason.reason;
+            return reason;
+        } else {
+            return wait_on_signal(-1);
+        }
+    }
+
+    // Now we have a signal representing a stop we should report back to user
+    stop_running_threads();
+    // pass the TID originally intercepted to another func,
+    // so that that function can skip the original thread for cleanup, as we've
+    // alredy handled it
+    reason = cleanup_exited_threads(tid).value_or(reason);
+
+    state_ = reason.reason;
+    current_thread_ = tid;
     return reason;
 }
 
@@ -443,6 +608,7 @@ gsdb::stop_reason gsdb::process::step_instruction(std::optional<pid_t> otid) {
         to_reenable = &bp;
     }
 
+    swallow_pending_sigstop(tid);
     if (ptrace(PTRACE_SINGLESTEP, tid, nullptr, nullptr) < 0) {
         error::send_errno("Could not single step!");
     }
@@ -773,6 +939,7 @@ void gsdb::process::populate_existing_threads() {
     auto path = "/proc/" + std::to_string(pid_) + "/task";
     for (auto& entry : std::filesystem::directory_iterator(path)) {
         auto tid = std::stoi(entry.path().filename().string());
-        threads_.emplace(tid, thread_state{tid, registers(*this, tid)});
+        threads_.emplace(
+            tid, thread_state{tid, registers(*this, tid), stop_reason{}});
     }
 }

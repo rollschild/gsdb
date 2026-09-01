@@ -10,11 +10,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <libgsdb/stoppoint_collection.hpp>
 #include <libgsdb/watchpoint.hpp>
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -82,6 +84,8 @@ struct thread_state {
     registers regs;
     stop_reason reason;
     process_state state = process_state::stopped;
+    // tracks whether that thread has a pending `SIGSTOP`
+    bool pending_sigstop = false;
 };
 
 class syscall_catch_policy {
@@ -116,7 +120,7 @@ class process {
     static std::unique_ptr<process> attach(pid_t pid);
 
     void resume(std::optional<pid_t> otid = std::nullopt);
-    void wait_on_signal(pid_t to_wait = -1);
+    stop_reason wait_on_signal(pid_t to_await = -1);
     /**
      * Returns a stop reason that describes why the process halted after
      * stepping
@@ -225,6 +229,21 @@ class process {
         return threads_;
     }
 
+    void stop_running_threads();
+    void resume_all_threads();
+
+    std::optional<gsdb::stop_reason> cleanup_exited_threads(
+        pid_t main_stop_tid);
+    void report_thread_lifecycle_event(const stop_reason& reason);
+
+    std::optional<stop_reason> handle_signal(stop_reason reason,
+                                             bool is_main_stop);
+
+    void install_thread_lifecycle_callback(
+        std::function<void(const stop_reason&)> callback) {
+        thread_lifecycle_callback_ = std::move(callback);
+    }
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object
@@ -241,6 +260,10 @@ class process {
      * objects for each of the listed TIDs
      */
     void populate_existing_threads();
+
+    void swallow_pending_sigstop(pid_t tid);
+    void send_continue(pid_t tid);
+    void step_over_breakpoint(pid_t tid);
 
     pid_t pid_ = 0;
     bool terminate_on_end_ = true;
@@ -271,6 +294,10 @@ class process {
 
     std::unordered_map<pid_t, thread_state> threads_;
     pid_t current_thread_ = 0;
+
+    // a callback to `gsdb::process` that the command line can install to
+    // receive notifications when a thread starts/exits
+    std::function<void(const stop_reason&)> thread_lifecycle_callback_;
 };
 }  // namespace gsdb
 
