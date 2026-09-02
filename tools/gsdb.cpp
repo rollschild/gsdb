@@ -78,6 +78,7 @@ watchpoint  - Commands for operating on watchpoints
 catchpoint  - Commands for operating on catchpoints
 down        - Select the stack frame below the current one
 up          - Select the stack frame above the current one
+thread      - Commands for operating on threads
 )";
     } else if (is_prefix(args[1], "register")) {
         std::cerr << R"(Available commands:
@@ -119,6 +120,11 @@ write <address> <bytes>
         std::cerr << R"(Available options:
 -c <number-of-instructions>
 -a <start-address>
+)";
+    } else if (is_prefix(args[1], "thread")) {
+        std::cerr << R"(Available commands:
+list
+select <thread-ID>
 )";
     } else {
         std::cerr << "No help available on that\n";
@@ -227,13 +233,13 @@ std::string format_join(const T& t, std::string_view separator) {
 std::string get_sigtrap_info(const gsdb::process& process,
                              gsdb::stop_reason reason) {
     if (reason.trap_reason == gsdb::trap_type::software_break) {
-        auto& site =
-            process.breakpoint_sites().get_by_address(process.get_pc());
+        auto& site = process.breakpoint_sites().get_by_address(
+            process.get_pc(reason.tid));
         return std::format(" (breakpoint {})", site.id());
     }
 
     if (reason.trap_reason == gsdb::trap_type::hardware_break) {
-        auto id = process.get_current_hardware_stoppoint();
+        auto id = process.get_current_hardware_stoppoint(reason.tid);
         if (id.index() == 0) {
             // hardware stoppoint, not watchpoint
             return std::format(" (breakpoint {})", std::get<0>(id));
@@ -278,11 +284,11 @@ std::string get_sigtrap_info(const gsdb::process& process,
 std::string get_signal_stop_reason(const gsdb::target& target,
                                    gsdb::stop_reason reason) {
     auto& process = target.get_process();
-    auto pc = process.get_pc();
+    auto pc = process.get_pc(reason.tid);
     std::string message = std::format("stopped with signal {} at {:#x}",
                                       sigabbrev_np(reason.info), pc.addr());
 
-    auto line = target.line_entry_at_pc();
+    auto line = target.line_entry_at_pc(reason.tid);
     if (line != gsdb::line_table::iterator()) {
         auto file = line->file_entry->path.filename().string();
         message += std::format(", {}:{}", file, line->line);
@@ -301,27 +307,27 @@ std::string get_signal_stop_reason(const gsdb::target& target,
 }
 
 void print_stop_reason(const gsdb::target& target, gsdb::stop_reason reason) {
-    // std::cout << "Process " << process.pid() << ' ';
     std::string message;
 
     switch (reason.reason) {
         case gsdb::process_state::exited:
-            message = std::format("exited with status {}",
-                                  static_cast<int>(reason.info));
-            break;
+            std::print("Process {} exited with status {}\n",
+                       target.get_process().pid(),
+                       static_cast<int>(reason.info));
+            return;
         case gsdb::process_state::terminated:
-            message = std::format("terminated with signal {}",
-                                  sigabbrev_np(reason.info));
-            break;
+            std::print("Process {} terminated with signal {}\n",
+                       target.get_process().pid(), sigabbrev_np(reason.info));
+            return;
         case gsdb::process_state::stopped:
-            message = get_signal_stop_reason(target, reason);
-            break;
+            std::print("Thread {} {}\n", reason.tid,
+                       get_signal_stop_reason(target, reason));
+            return;
         default:
-            message = "still running!";
-            break;
+            std::print("Process {} still running!\n",
+                       target.get_process().pid());
+            return;
     }
-
-    std::print("Process {} {}\n", target.get_process().pid(), message);
 }
 
 void handle_register_read(gsdb::target& target,
@@ -878,6 +884,35 @@ void handle_catchpoint_command(gsdb::process& process,
     }
 }
 
+void handle_thread_command(gsdb::target& target,
+                           const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        print_help({"help", "thread"});
+        return;
+    }
+
+    if (is_prefix(args[1], "list")) {
+        for (auto& [tid, thread] : target.threads()) {
+            auto prefix =
+                tid == target.get_process().current_thread() ? "*" : " ";
+            std::print("{}Thread {}: {}\n", prefix, tid,
+                       get_signal_stop_reason(target, thread.state->reason));
+        }
+    } else if (is_prefix(args[1], "select")) {
+        if (args.size() != 3) {
+            print_help({"help", "thread"});
+            return;
+        }
+
+        auto tid = gsdb::to_integral<pid_t>(args[2]);
+        if (!tid) {
+            std::cerr << "Invalid thread ID!\n";
+            return;
+        }
+        target.get_process().set_current_thread(*tid);
+    }
+}
+
 void handle_command(std::unique_ptr<gsdb::target>& target,
                     std::string_view line) {
     auto args = split(line, ' ');
@@ -886,7 +921,7 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
 
     if (is_prefix(command, "continue")) {
         /*if (std::string_view{"continue"}.starts_with(command)) {*/
-        process->resume();
+        process->resume_all_threads();
         auto reason = process->wait_on_signal();
         handle_stop(*target, reason);
     } else if (is_prefix(command, "register")) {
@@ -924,6 +959,8 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
         print_code_location(*target);
     } else if (is_prefix(command, "backtrace")) {
         print_backtrace(*target);
+    } else if (is_prefix(command, "thread")) {
+        handle_thread_command(*target, args);
     } else {
         std::cerr << "Unknown command!\n";
     }
@@ -958,6 +995,24 @@ void main_loop(std::unique_ptr<gsdb::target>& target) {
     }
 }
 
+void thread_lifecycle_callback(const gsdb::stop_reason& reason) {
+    std::string_view action;
+    switch (reason.reason) {
+        case gsdb::process_state::exited:
+            action = "exited";
+            break;
+        case gsdb::process_state::terminated:
+            action = "terminated";
+            break;
+        case gsdb::process_state::stopped:
+            action = "created";
+            break;
+        default:
+            break;
+    }
+
+    std::print("Thread {} {}\n", reason.tid, action);
+}
 }  // namespace
 
 int main(int argc, const char** argv) {
@@ -970,6 +1025,8 @@ int main(int argc, const char** argv) {
         auto target = attach(argc, argv);
         g_gsdb_process = &target->get_process();
         signal(SIGINT, handle_sigint);
+        target->get_process().install_thread_lifecycle_callback(
+            thread_lifecycle_callback);
         main_loop(target);
     } catch (const gsdb::error& err) {
         std::cout << err.what() << '\n';

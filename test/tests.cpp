@@ -16,6 +16,7 @@
 #include <libgsdb/process.hpp>
 #include <libgsdb/target.hpp>
 #include <regex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -899,5 +900,35 @@ TEST_CASE("Shared library tracing works", "[dynlib]") {
     REQUIRE(target->get_pc_file_address().elf_file()->path().filename() ==
             "libmeow.so");
 
+    close(dev_null);
+}
+
+TEST_CASE("Multi-threading works", "[threads]") {
+    auto dev_null = open("/dev/null", O_WRONLY);
+    auto path = std::string(TARGETS_DIR) + "/multi_threaded";
+    auto target = target::launch(path, dev_null);
+    auto& proc = target->get_process();
+
+    target->create_function_breakpoint("say_hi").enable();
+
+    std::set<pid_t> tids;
+
+    stop_reason reason;
+    do {
+        proc.resume_all_threads();
+        reason = proc.wait_on_signal();
+        for (auto& [tid, thread] : proc.thread_states()) {
+            if (thread.reason.reason == process_state::stopped and
+                tid != proc.pid()) {
+                tids.insert(tid);
+            }
+        }
+    } while (tids.size() < 10);
+
+    REQUIRE(tids.size() == 10);
+
+    proc.resume_all_threads();
+    reason = proc.wait_on_signal();
+    REQUIRE(reason.reason == process_state::exited);
     close(dev_null);
 }
