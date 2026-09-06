@@ -796,3 +796,29 @@ Linux creates threads with `clone` syscall, but it's too low level. Application 
 ##### ptrace and procfs
 
 `/proc/<pid>/task` has a subdirectory for every thread whose names is the TID of the thread.
+
+### Dwarf Expressions
+
+**DWARF expressions** provide a way for the compiler to encode arbitrarily complex schemes for locating variables at runtime.
+
+![DWARF Expression](dwarf-expression.jpg)
+
+#### Single Location Descriptions
+
+Two types: **simple location descriptions** & **composite location descriptions**.
+
+- **simple location description**: locates a variable stored in one contiguous block (for example, a single register or uninterrupted area of memory)
+- **composite location description**: locates a variable that splits its storage between multiple areas (for example, a structure whose two members live in separate registers).
+
+##### Simple Location Descriptions
+
+- **register**
+- **implicit**
+- **address**
+- **empty**
+
+##### Composite Location Descriptions
+
+DWARF encodes composite location descriptions as a series of simple location descriptions, each terminated by a single `DW_OP_piece` or `DW_OP_bit_piece` opcode.
+
+Performing a right shift on a signed integer in C++ is implementation-defined behavior, and GCC on x64 defines it to perform an arithmetic shift (as do most implementations).

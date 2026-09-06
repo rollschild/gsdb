@@ -4,7 +4,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <libgsdb/bit.hpp>
 #include <libgsdb/dwarf.hpp>
@@ -858,6 +860,19 @@ gsdb::registers execute_unwind_rules(unwind_context& ctx,
     return unwound_regs;
 }
 
+gsdb::virt_addr read_frame_base_result(
+    const gsdb::dwarf_expression::result& loc,
+    [[maybe_unused]] const gsdb::registers& regs) {
+    auto simple_loc =
+        std::get_if<gsdb::dwarf_expression::simple_location>(&loc);
+    if (!simple_loc) gsdb::error::send("Unsupported frame base location!");
+    if (auto addr_res =
+            std::get_if<gsdb::dwarf_expression::address_result>(simple_loc)) {
+        return addr_res->address;
+    }
+    gsdb::error::send("Unsupported frame base location!");
+}
+
 }  // namespace
 
 gsdb::dwarf::dwarf(const gsdb::elf& parent) : elf_(&parent) {
@@ -1673,4 +1688,348 @@ gsdb::registers gsdb::call_frame_information::unwind(const process& proc,
 
     // Execute the unwind rules we just computed and return the result
     return execute_unwind_rules(ctx, regs, proc);
+}
+
+gsdb::dwarf_expression::result gsdb::dwarf_expression::eval(
+    const process& proc, const registers& regs, bool push_cfa) const {
+    cursor cur({expr_data_.begin(), expr_data_.end()});
+
+    std::vector<std::uint64_t> stack;
+    if (push_cfa) stack.push_back(regs.cfa().addr());
+
+    std::optional<simple_location> most_recent_location;
+    std::vector<pieces_result::piece> pieces;
+
+    // by default, assume the result of the DWARF expression is an address,
+    // but `DW_OP_stack_value` opcode may override this value
+    bool result_is_address = true;
+
+    auto binop = [&](auto op) {
+        auto rhs = stack.back();
+        stack.pop_back();
+        auto lhs = stack.back();
+        stack.pop_back();
+        stack.push_back(op(lhs, rhs));
+    };
+    // relational operator
+    auto relop = [&](auto op) {
+        auto rhs = static_cast<std::int64_t>(stack.back());
+        stack.pop_back();
+        auto lhs = static_cast<std::int64_t>(stack.back());
+        stack.pop_back();
+        stack.push_back(op(lhs, rhs) ? 1 : 0);
+    };
+
+    // current program counter value
+    auto virt_pc =
+        virt_addr{regs.read_by_id_as<std::uint64_t>(register_id::rip)};
+    // converted to file address
+    auto pc = virt_pc.to_file_addr(*parent_->elf_file());
+    auto func = parent_->function_containing_address(pc);
+
+    // figures out which simple location description the current state of the
+    // expression interpreter represents
+    auto get_current_location = [&]() {
+        simple_location loc;
+        if (stack.empty()) {
+            loc = most_recent_location.value_or(empty_result{});
+            most_recent_location.reset();
+        } else if (result_is_address) {
+            loc = address_result{virt_addr{stack.back()}};
+            stack.pop_back();
+        } else {
+            // implicit literal location
+            loc = literal_result{stack.back()};
+            stack.pop_back();
+            result_is_address = true;
+        }
+        return loc;
+    };
+
+    while (!cur.finished()) {
+        auto opcode = cur.u8();
+
+        if (opcode >= DW_OP_lit0 and opcode <= DW_OP_lit31) {
+            stack.push_back(opcode - DW_OP_lit0);
+        } else if (opcode >= DW_OP_breg0 and opcode <= DW_OP_breg31) {
+            auto reg = opcode - DW_OP_breg0;
+            auto reg_val = regs.read(register_info_by_dwarf(reg));
+            auto offset = cur.sleb128();
+            stack.push_back(std::get<std::uint64_t>(reg_val) + offset);
+        } else if (opcode >= DW_OP_reg0 and opcode <= DW_OP_reg31) {
+            auto reg = opcode - DW_OP_reg0;
+            if (in_frame_info_) {
+                auto reg_val = regs.read(register_info_by_dwarf(reg));
+                stack.push_back(std::get<std::uint64_t>(reg_val));
+            } else {
+                most_recent_location =
+                    register_result{static_cast<std::uint64_t>(reg)};
+            }
+        }
+
+        switch (opcode) {
+            case DW_OP_addr: {
+                auto addr = file_addr{*parent_->elf_file(), cur.u64()};
+                stack.push_back(addr.to_virt_addr().addr());
+                break;
+            }
+            case DW_OP_const1u:
+                stack.push_back(cur.u8());
+                break;
+            case DW_OP_const1s:
+                stack.push_back(cur.s8());
+                break;
+            case DW_OP_const2u:
+                stack.push_back(cur.u16());
+                break;
+            case DW_OP_const2s:
+                stack.push_back(cur.s16());
+                break;
+            case DW_OP_const4u:
+                stack.push_back(cur.u32());
+                break;
+            case DW_OP_const4s:
+                stack.push_back(cur.s32());
+                break;
+            case DW_OP_const8u:
+                stack.push_back(cur.u64());
+                break;
+            case DW_OP_const8s:
+                stack.push_back(cur.s64());
+                break;
+            case DW_OP_constu:
+                stack.push_back(cur.uleb128());
+                break;
+            case DW_OP_consts:
+                stack.push_back(cur.sleb128());
+                break;
+            case DW_OP_bregx: {
+                auto reg_val = regs.read(register_info_by_dwarf(cur.uleb128()));
+                stack.push_back(std::get<std::uint64_t>(reg_val) +
+                                cur.sleb128());
+                break;
+            }
+            case DW_OP_fbreg: {
+                // nested DWARF expression
+                auto offset = cur.sleb128();
+                // This will evaluate the DWARF expression in that attribute and
+                // return the result as an sdb::dwarf_expression::result object.
+                auto fb_loc =
+                    func.value()[DW_AT_frame_base].as_evaluated_location(
+                        proc, regs, /*in_frame_info*/ true);
+                // retrieve the frame base from this DWARF expression result
+                auto fb_addr = read_frame_base_result(fb_loc, regs);
+                stack.push_back(fb_addr.addr() + offset);
+                break;
+            }
+            case DW_OP_dup:
+                stack.push_back(stack.push_back());
+                break;
+            case DW_OP_drop:
+                stack.pop_back();
+                break;
+            case DW_OP_pick:
+                // pushes to the stack the value stored at `stack.rebgin()[N]`,
+                // where N is unsigned 8-bit operand to the instruction
+                stack.push_back(stack.rbegin()[cur.u8()]);
+                break;
+            case DW_OP_over:
+                // duplicates the value underneath the value on top of the stack
+                stack.push_back(stack.rbegin()[1]);
+                break;
+            case DW_OP_swap:
+                std::swap(stack.rbegin()[0], stack.rbegin()[1]);
+                break;
+            case DW_OP_rot:
+                // rotates the top three values of the stack, such that
+                // `stack[0]` becomes `stack[2]`, `stack[1]` becomes `stack[0]`
+                // and `stack[2]` becomes `stack[1]`
+                std::rotate(stack.rbegin(), stack.rbegin() + 1,
+                            stack.rbegin() + 3);
+                break;
+            case DW_OP_deref:
+                // pushes the value stored at the address on the top of the
+                // stack to the stack
+                auto addr = virt_addr{stack.back()};
+                stack.back() = proc.read_memory_as<std::uint64_t>(addr);
+                break;
+            case DW_OP_deref_size: {
+                auto addr = virt_addr{stack.back()};
+                auto size_to_read = cur.u8();
+                auto mem = proc.read_memory(addr, size_to_read);
+                std::uint64_t res = 0;
+                // zero-extends the value to 64 bits
+                std::copy(mem.data(), mem.data() + mem.size(),
+                          reinterpret_cast<std::byte*>(&res));
+                stack.back() = res;
+                break;
+            }
+            case DW_OP_xderef:
+                // An extended dereference that also takes an address space in
+                // which to operate.
+                //  This is for machines that have multiple address spaces, like
+                //  GPUs, and is unused on x6
+                gsdb::error::send("DW_OP_xderef not supported!");
+            case DW_OP_xderef_size:
+                gsdb::error::send("DW_OP_xderef_size not supported!");
+            case DW_OP_push_object_address:
+                gsdb::error::send(
+                    "Unsupported opcode DW_OP_push_object_address!");
+            case DW_OP_form_tls_address:
+                gsdb::error::send("Unsupported opcode DW_OP_form_tls_address!");
+            case DW_OP_call_frame_cfa:
+                // pushes the CFA for the current stack frame to the top of the
+                // DWARF expression stack.
+                stack.push_back(regs.cfa().addr());
+                break;
+            case DW_OP_minus:
+                binop(std::minus{});
+                break;
+            case DW_OP_mod:
+                binop(std::modulus{});
+                break;
+            case DW_OP_mul:
+                binop(std::multiplies{});
+                break;
+            case DW_OP_and:
+                binop(std::bit_and{});
+                break;
+            case DW_OP_or:
+                binop(std::bit_or{});
+                break;
+            case DW_OP_plus:
+                binop(std::plus{});
+                break;
+            case DW_OP_shl:
+                binop([](auto lhs, auto rhs) { return lhs << rhs; });
+                break;
+            case DW_OP_shr:
+                binop([](auto lhs, auto rhs) { return lhs >> rhs; });
+                break;
+            case DW_OP_shra:
+                binop([](auto lhs, auto rhs) {
+                    return static_cast<std::int64_t>(lhs) >> rhs;
+                });
+                break;
+            case DW_OP_xor:
+                binop(std::bit_xor{});
+                break;
+            case DW_OP_div: {
+                auto rhs = static_cast<std::int64_t>(stack.back());
+                stack.pop_back();
+                auto lhs = static_cast<std::int64_t>(stack.back());
+                stack.pop_back();
+                stack.push_back(static_cast<std::uint64_t>(lhs / rhs));
+                break;
+            }
+            case DW_OP_abs: {
+                auto sval = static_cast<std::int64_t>(stack.back());
+                sval = std::abs(sval);
+                stack.back() = static_cast<std::uint64_t>(sval);
+                break;
+            }
+            case DW_OP_neg: {
+                auto neg = -static_cast<std::int64_t>(stack.back());
+                stack.back() = static_cast<std::uint64_t>(neg);
+                break;
+            }
+            case DW_OP_plus_uconst:
+                stack.back() += cur.uleb128();
+                break;
+            case DW_OP_not:
+                stack.back() = ~stack.back();
+                break;
+            case DW_OP_le:
+                relop(std::less_equal{});
+                break;
+            case DW_OP_ge:
+                relop(std::greater_equal{});
+                break;
+            case DW_OP_eq:
+                relop(std::equal_to{});
+                break;
+            case DW_OP_lt:
+                relop(std::less{});
+                break;
+            case DW_OP_gt:
+                relop(std::greater{});
+                break;
+            case DW_OP_ne:
+                relop(std::not_equal_to{});
+                break;
+            case DW_OP_skip:
+                cur += cur.s16();
+                break;
+            case DW_OP_bra:
+                if (stack.back() != 0) {
+                    cur += cur.s16();
+                }
+                stack.pop_back();
+                break;
+            case DW_OP_call2:
+                gsdb::error::send("Unsupported opcode DW_OP_call2!");
+            case DW_OP_call4:
+                gsdb::error::send("Unsupported opcode DW_OP_call4!");
+            case DW_OP_call_ref:
+                gsdb::error::send("Unsupported opcode DW_OP_call_ref!");
+            case DW_OP_regx:
+                //  its function depends on whether it is used in a frame
+                //  information context.
+                if (in_frame_info_) {
+                    // If it is, this instruction pushes the value of the
+                    // specified register to the stack (in which case the
+                    // variable location is an address location).
+                    auto reg_val =
+                        regs.read(register_info_by_dwarf(cur.uleb128()));
+                    stack.push_back(std::get<std::uint64_t>(reg_val));
+                } else {
+                    // If this DWARF expression is not in a frame information
+                    // context, the DW_OP_regx instruction indicates that the
+                    // variable lives in the specified register.
+                    most_recent_location = register_result{cur.uleb128()};
+                }
+                break;
+            case DW_OP_implicit_value: {
+                // the variable has no location but has a known value encoded by
+                // a ULEB128 operand giving the length of the data followed by
+                // the data itself
+                auto length = cur.uleb128();
+                most_recent_location =
+                    data_result{span<const std::byte>{cur.position(), length}};
+                break;
+            }
+            case DW_OP_stack_value:
+                // the variable has no location but has a known value stored on
+                // the top of the stack.
+                result_is_address = false;
+                break;
+            case DW_OP_nop:
+                break;
+            case DW_OP_piece: {
+                // indicates that the most recent location stores one piece of
+                // the data for this variable, and the operand gives the piece’s
+                // byte size
+                auto byte_size = cur.uleb128();
+                simple_location loc = get_current_location();
+                pieces.push_back(pieces_result::piece{loc, byte_size * 8});
+                break;
+            }
+            case DW_OP_bit_piece: {
+                // indicates that the most recent location stores one piece of
+                // the data for this variable, but its location or size isn’t
+                // aligned to a byte.
+                auto bit_size = cur.uleb128();
+                auto offset = cur.uleb128();
+                simple_location loc = get_current_location();
+                pieces.push_back(pieces_result::piece{loc, bit_size, offset});
+                break;
+            }
+        }
+    }
+
+    if (!pieces.empty()) {
+        return pieces_result{pieces};
+    }
+
+    return get_current_location();
 }

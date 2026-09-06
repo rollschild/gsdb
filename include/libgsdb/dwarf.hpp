@@ -13,6 +13,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "libgsdb/process.hpp"
@@ -152,6 +153,64 @@ class range_list::iterator {
     file_addr base_address_;
     const std::byte* pos_ = nullptr;
     entry current_;
+};
+
+class dwarf_expression {
+   public:
+    // address
+    struct address_result {
+        virt_addr address;
+    };
+    // register
+    struct register_result {
+        std::uint64_t reg_num;
+    };
+    // DW_OP_implicit_result opcode
+    struct data_result {
+        span<const std::byte> data;
+    };
+    // DW_OP_stack_value opcode
+    struct literal_result {
+        std::uint64_t value;
+    };
+
+    // empty location description
+    struct empty_result {};
+    using simple_location =
+        std::variant<address_result, register_result, data_result,
+                     literal_result, empty_result>;
+
+    struct pieces_result {
+        struct piece {
+            simple_location location;
+            std::uint64_t bit_size;
+            // bit offset from the `location` member at which the data is really
+            // stored
+            std::uint64_t offset = 0;
+        };
+        std::vector<piece> pieces;
+    };
+    using result = std::variant<simple_location, pieces_result>;
+
+    dwarf_expression(const dwarf& parent, span<const std::byte> expr_data,
+                     bool in_frame_info)
+        : parent_(&parent),
+          expr_data_(expr_data),
+          in_frame_info_(in_frame_info) {}
+
+    // push_cfa: whether the CFA should be pushed to the stack before the
+    // expression is evaluated; used for running the `expression` and
+    // `val_expression` register restore rules when unwinding the stack
+    result eval(const process& proc, const registers& regs,
+                bool push_cfa = false) const;
+
+   private:
+    const dwarf* parent_;
+    span<const std::byte> expr_data_;
+
+    // whether the expression resides in the `.eh_frame` section or a
+    // `DW_AT_frame_base` attribute
+    bool in_frame_info_;
 };
 
 class attr {
