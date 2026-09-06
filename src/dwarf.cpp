@@ -2033,3 +2033,48 @@ gsdb::dwarf_expression::result gsdb::dwarf_expression::eval(
 
     return get_current_location();
 }
+
+/**
+ * Find the single location description that corresponds to the program counter
+ * value in the given register set and evaluate that expression
+ */
+gsdb::dwarf_expression::result gsdb::location_list::eval(
+    const process& proc, const registers& regs) const {
+    auto virt_pc =
+        virt_addr{regs.read_by_id_as<std::uint64_t>(register_id::rip)};
+    auto pc = virt_pc.to_file_addr(*parent_->elf_file());
+    auto func = parent_->function_containing_address(pc);
+
+    // cursor for the location list's data
+    cursor cur({expr_data_.begin(), expr_data_.end()});
+    // the base address flag: a 64-bit integer with all bits set to 1
+    constexpr auto base_address_flag = ~static_cast<std::uint64_t>(0);
+    // retrieve the initial base address from the root compile unit DIE
+    auto base_address = cu_->root()[DW_AT_low_pc].as_address().addr();
+
+    // Read list's entries until end-of-list-entry, where both elements are `0`
+    auto first = cur.u64();
+    auto second = cur.u64();
+    while (!(first == 0 and second == 0)) {
+        if (first == base_address_flag) {
+            // the entry is a base address selector
+            base_address = second;
+        } else {
+            // entry is a location entry
+            auto length = cur.u16();
+            if (pc.addr() >= base_address + first and
+                pc.addr() < base_address + second) {
+                dwarf_expression expr(*parent_,
+                                      {cur.position(), cur.position() + length},
+                                      in_frame_info_);
+                return expr.eval(proc, regs);
+            } else {
+                cur += length;
+            }
+        }
+        first = cur.u64();
+        second = cur.u64();
+    }
+
+    return dwarf_expression::empty_result{};
+}
