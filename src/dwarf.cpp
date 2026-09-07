@@ -2078,3 +2078,41 @@ gsdb::dwarf_expression::result gsdb::location_list::eval(
 
     return dwarf_expression::empty_result{};
 }
+
+gsdb::dwarf_expression gsdb::attr::as_expression(bool in_frame_info) const {
+    cursor cur({location_, cu_->data().end()});
+    auto len = cur.uleb128();
+    span<const std::byte> data{cur.position(), len};
+    return dwarf_expression{*cu_->dwarf_info(), data, in_frame_info};
+}
+
+gsdb::location_list gsdb::attr::as_location_list(bool in_frame_info) const {
+    // DWARF encodes location lists as an offset into the .debug_loc section
+    auto section =
+        cu_->dwarf_info()->elf_file()->get_section_contents(".debug_loc");
+
+    cursor cur({location_, cu_->data().end()});
+    auto offset = cur.u32();
+
+    // Note that we won’t know the length of the location list before evaluating
+    // it, so we just use the end of the .debug_loc section as the marker for
+    // the end of the data.
+    span<const std::byte> data(section.begin() + offset, section.end());
+    return location_list{*cu_->dwarf_info(), *cu_, data, in_frame_info};
+}
+
+gsdb::dwarf_expression::result gsdb::attr::as_evaluated_location(
+    const process& proc, const registers& regs, bool in_frame_info) const {
+    if (form_ == DW_FORM_exprloc) {
+        // DWARF encodes single location descriptions with the form DW_FORM
+        // _exprloc
+        auto expr = as_expression(in_frame_info);
+        return expr.eval(proc, regs);
+    } else if (form_ == DW_FORM_sec_offset) {
+        // Location lists have the form DW_FORM_sec_offset
+        auto loc_list = as_location_list(in_frame_info);
+        return loc_list.eval(proc, regs);
+    } else {
+        error::send("Invalid location type!");
+    }
+}

@@ -250,6 +250,22 @@ class attr {
 
     range_list as_range_list() const;
 
+    /**
+     * To retrieve DIE's contents as `dwarf_expression`
+     */
+    dwarf_expression as_expression(bool in_frame_info) const;
+    /**
+     * To retrieve the attribute's contents as location list
+     */
+    location_list as_location(bool in_frame_info) const;
+    /**
+     * Indicate whether the given attribute represents a single location
+     * description or a location list, and then evaluate the contents
+     */
+    dwarf_expression::result as_evaluated_location(const process& proc,
+                                                   const registers& regs,
+                                                   bool in_frame_info) const;
+
    private:
     const compile_unit* cu_;
     std::uint64_t type_;

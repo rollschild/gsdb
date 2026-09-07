@@ -139,6 +139,10 @@ REPL commands (all prefix-matched, so `c` works for `continue`):
 - **Catch2** (v3) - test framework, found via `find_package(Catch2 CONFIG)`
 - **GTest** - also found in root CMakeLists.txt (`find_package(GTest REQUIRED)`) but not used by any test target; tests use Catch2 exclusively. This is a leftover that could be removed.
 
+## Style reviews
+
+A user-level skill, `cpp-style-review` (`~/.claude/skills/cpp-style-review/`), audits this codebase against Effective Modern C++, the C++ Core Guidelines, and other industry sources. It reports only (no source edits) and writes its findings to `.claude/cpp-style-review-<date>.md`. Invoke with `/cpp-style-review`; the latest report is `.claude/cpp-style-review-2026-09-06.md`.
+
 ## Troubleshooting
 
 ### Clangd false positives with libstdc++
