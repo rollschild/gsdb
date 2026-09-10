@@ -7,19 +7,23 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <libgsdb/target.hpp>
 #include <libgsdb/types.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "libgsdb/bit.hpp"
 #include "libgsdb/breakpoint.hpp"
 #include "libgsdb/breakpoint_site.hpp"
 #include "libgsdb/disassembler.hpp"
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/elf.hpp"
+#include "libgsdb/error.hpp"
 #include "libgsdb/process.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/stack.hpp"
@@ -494,4 +498,70 @@ void gsdb::target::notify_thread_lifecycle_event(const stop_reason& reason) {
         // this is a thread exit event
         threads_.erase(tid);
     }
+}
+
+std::vector<std::byte> gsdb::target::read_location_data(
+    const dwarf_expression::result& loc, std::size_t size,
+    std::optional<pid_t> otid) const {
+    auto tid = otid.value_or(process_->current_thread());
+
+    if (auto simple_loc =
+            std::get_if<gsdb::dwarf_expression::simple_location>(&loc)) {
+        if (auto reg_loc = std::get_if<gsdb::dwarf_expression::register_result>(
+                simple_loc)) {
+            auto reg_info = register_info_by_dwarf(reg_loc->reg_num);
+            auto reg_value =
+                threads_.at(tid).frames.current_frame().regs.read(reg_info);
+            auto get_bytes = [](auto value) {
+                std::vector<std::byte> bytes(sizeof(value));
+                auto begin = reinterpret_cast<const std::byte*>(&value);
+                std::copy(begin, begin + sizeof(value), bytes.data());
+                return bytes;
+            };
+            return std::visit(get_bytes, reg_value);
+        } else if (auto addr_res =
+                       std::get_if<gsdb::dwarf_expression::address_result>(
+                           simple_loc)) {
+            // read the requested number of bytes from the memory at the address
+            // stored in the result
+            return process_->read_memory(addr_res->address, size);
+        } else if (auto data_res =
+                       std::get_if<gsdb::dwarf_expression::data_result>(
+                           simple_loc)) {
+            return {data_res->data.begin(), data_res->data.end()};
+        } else if (auto literal_res =
+                       std::get_if<gsdb::dwarf_expression::literal_result>(
+                           simple_loc)) {
+            auto begin =
+                reinterpret_cast<const std::byte*>(&literal_res->value);
+            return {begin, begin + size};
+        }
+    } else if (auto pieces_res =
+                   std::get_if<gsdb::dwarf_expression::pieces_result>(&loc)) {
+        std::vector<std::byte> data(size);
+        // current bit offset at which new data should be written into this
+        // vector
+        std::size_t offset = 0;
+        for (auto& piece : pieces_res->pieces) {
+            // if the bit size is not exactly divisible by eight, integer
+            // division will cut off the remainder, but we want to round up
+            // toward the nearest byte
+            auto byte_size = (piece.bit_size + 7) / 8;
+            auto piece_data =
+                read_location_data(piece.location, byte_size, otid);
+            if (offset % 8 == 0 and piece.offset == 0 and
+                piece.bit_size % 8 == 0) {
+                std::copy(piece_data.begin(), piece_data.end(),
+                          data.begin() + offset / 8);
+                offset += piece.bit_size;
+            } else {
+                auto dest = reinterpret_cast<std::uint8_t*>(data.data());
+                auto src =
+                    reinterpret_cast<const std::uint8_t*>(piece_data.data());
+                memcpy_bits(dest, 0, src, piece.offset, piece.bit_size);
+            }
+        }
+        return data;
+    }
+    gsdb::error::send("Invalid location type!");
 }

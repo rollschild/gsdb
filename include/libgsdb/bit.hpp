@@ -2,6 +2,7 @@
 #define GSDB_BIT_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <libgsdb/types.hpp>
 #include <string_view>
@@ -46,6 +47,27 @@ byte64 to_byte64(From src) {
     byte64 ret{};
     std::memcpy(&ret, &src, sizeof(From));
     return ret;
+}
+
+/**
+ * Handle copying data that isn't aligned to a byte
+ */
+inline void memcpy_bits(std::uint8_t* dest, std::uint32_t dest_bit,
+                        const std::uint8_t* src, std::uint32_t src_bit,
+                        std::uint32_t n_bits) {
+    // copy data one bit at a time
+    for (; n_bits; --n_bits, ++src_bit, ++dest_bit) {
+        // clear that bit in the destination data
+        std::uint8_t dest_mask = 1 << (dest_bit % 8);
+        // dest_bit / 8, the byte selector
+        dest[dest_bit / 8] &=
+            ~dest_mask;  // ~dest_mask: `0b0000'1000` becomes `0b1111'0111`
+        auto src_mask = 1 << (src_bit % 8);
+        auto corresponding_src_bit_set = src[src_bit / 8] & src_mask;
+        if (corresponding_src_bit_set) {
+            dest[dest_bit / 8] |= dest_mask;
+        }
+    }
 }
 
 }  // namespace gsdb

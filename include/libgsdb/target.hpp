@@ -137,6 +137,14 @@ class target {
      */
     void notify_thread_lifecycle_event(const stop_reason& reason);
 
+    /**
+     * Takes a DWARF expression result and returns the bytes that make up the
+     * variable stored there
+     */
+    std::vector<std::byte> read_location_data(
+        const dwarf_expression::result& loc, std::size_t size,
+        std::optional<pid_t> otid = std::nullopt) const;
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), main_elf_(obj.get()) {

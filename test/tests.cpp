@@ -932,3 +932,70 @@ TEST_CASE("Multi-threading works", "[threads]") {
     REQUIRE(reason.reason == process_state::exited);
     close(dev_null);
 }
+
+TEST_CASE("Can read global integer variable", "[variable]") {
+    auto path = std::string(TARGETS_DIR) + "/global_variable";
+    auto target = target::launch(path);
+    auto& proc = target->get_process();
+
+    target->create_function_breakpoint("main").enable();
+    proc.resume();
+    proc.wait_on_signal();
+
+    auto var_die =
+        target->get_main_elf().get_dwarf().find_global_variable("g_int");
+    auto var_loc = var_die.value()[DW_AT_location].as_evaluated_location(
+        proc, proc.get_registers(), false);
+    auto res = target->read_location_data(var_loc, 8);
+    auto val = from_bytes<std::uint64_t>(res.data());
+
+    REQUIRE(val == 0);
+
+    target->step_over();
+    res = target->read_location_data(var_loc, 8);
+    val = from_bytes<std::uint64_t>(res.data());
+
+    REQUIRE(val == 1);
+
+    target->step_over();
+    res = target->read_location_data(var_loc, 8);
+    val = from_bytes<std::uint64_t>(res.data());
+
+    REQUIRE(val == 42);
+}
+
+TEST_CASE("DWARF expression work", "[dwarf]") {
+    // clang-format off
+    // DWARF's postfix composite-location grammar
+    std::vector<std::uint8_t> piece_data = {
+        DW_OP_reg16,     DW_OP_piece, 4, // piece 0: 4 bytes, in register 16
+                             DW_OP_piece, 8, // piece 1: 8 bytes, empty location
+        DW_OP_const4u, 0xff, 0xff, 0xff, 0xff,DW_OP_bit_piece, 5, 12 // piece 2: 5 bits at bit offset 12
+    };
+    // clang-format on
+
+    auto path = std::string(TARGETS_DIR) + "/step";
+    auto target = target::launch(path);
+    auto& proc = target->get_process();
+    gsdb::span<const std::byte> data{
+        reinterpret_cast<std::byte*>(piece_data.data()), piece_data.size()};
+    auto expr =
+        dwarf_expression(target->get_main_elf().get_dwarf(), data, false);
+    auto res = expr.eval(proc, proc.get_registers());
+
+    auto& pieces = std::get<gsdb::dwarf_expression::pieces_result>(res).pieces;
+    REQUIRE(pieces.size() == 3);
+    REQUIRE(pieces[0].bit_size == 4 * 8);
+    REQUIRE(pieces[1].bit_size == 8 * 8);
+    REQUIRE(pieces[2].bit_size == 5);
+    REQUIRE(std::get<dwarf_expression::register_result>(pieces[0].location)
+                .reg_num == 16);
+    REQUIRE(std::get_if<dwarf_expression::empty_result>(&pieces[1].location) !=
+            nullptr);
+    REQUIRE(std::get<dwarf_expression::address_result>(pieces[2].location)
+                .address.addr() == 0xffffffff);
+
+    REQUIRE(pieces[0].offset == 0);
+    REQUIRE(pieces[1].offset == 0);
+    REQUIRE(pieces[2].offset == 12);
+}

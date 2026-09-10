@@ -763,12 +763,13 @@ void execute_cfi_instruction(
                 std::get<cfa_register_rule>(ctx.cfa_rule).offset =
                     cur.sleb128() * cie.data_alignment_factor;
                 break;
-            case DW_CFA_def_cfa_expression:
+            case DW_CFA_def_cfa_expression: {
                 auto len = cur.uleb128();
                 auto expr = gsdb::dwarf_expression{
                     elf, {cur.position(), cur.position() + len}, true};
                 ctx.cfa_rule = cfa_expr_rule{expr};
                 break;
+            }
             case DW_CFA_undefined:
                 ctx.register_rules.emplace(cur.uleb128(), undefined_rule{});
                 break;
@@ -863,9 +864,10 @@ gsdb::registers execute_unwind_rules(unwind_context& ctx,
         auto reg_info = gsdb::register_info_by_dwarf(reg_rule->reg);
         cfa =
             std::get<std::uint64_t>(old_regs.read(reg_info)) + reg_rule->offset;
-    } else if (auto expr = std::get_if<cfa_expr_rule>(
-                   &ctx.cfa_rule)) {  // DWARF expression rule
-        auto res = expr->expr.eval(proc, old_regs);
+    } else {
+        auto& expr =
+            std::get<cfa_expr_rule>(ctx.cfa_rule);  // DWARF expression rule
+        auto res = expr.expr.eval(proc, old_regs);
         cfa = dwexp_addr_result(res).addr();
     }
     old_regs.set_cfa(gsdb::virt_addr{cfa});
@@ -1388,7 +1390,7 @@ std::optional<std::string_view> gsdb::die::name() const {
     return std::nullopt;
 }
 
-void gsdb::dwarf::index_die(const die& current) const {
+void gsdb::dwarf::index_die(const die& current, bool in_function) const {
     // A DIE has an address range if it contains a DW_AT_low_pc or a
     // DW_AT_ranges attribute.
     bool has_range =
@@ -1406,8 +1408,25 @@ void gsdb::dwarf::index_die(const die& current) const {
         }
     }
 
+    auto has_location = current.contains(DW_AT_location);
+    auto is_variable = current.abbrev_entry()->tag == DW_TAG_variable;
+
+    // if DIE has both `DW_AT_location` and `DW_TAG_variable` and is _not_
+    // nested inside a function DIE, then this DIE belongs to a global variable
+    if (has_location and is_variable and !in_function) {
+        if (auto name = current.name()) {
+            index_entry entry{current.cu(), current.position()};
+            global_variable_index_.emplace(*name, entry);
+        }
+    }
+    // note `is_function` vs. `in_function`
+    if (is_function) {
+        in_function = true;
+    }
+
     for (auto child : current.children()) {
-        index_die(child);
+        // index all child DIEs, with the new value of `in_function`
+        index_die(child, in_function);
     }
 }
 
@@ -1882,7 +1901,7 @@ gsdb::dwarf_expression::result gsdb::dwarf_expression::eval(
                 break;
             }
             case DW_OP_dup:
-                stack.push_back(stack.push_back());
+                stack.push_back(stack.back());
                 break;
             case DW_OP_drop:
                 stack.pop_back();
@@ -1906,12 +1925,13 @@ gsdb::dwarf_expression::result gsdb::dwarf_expression::eval(
                 std::rotate(stack.rbegin(), stack.rbegin() + 1,
                             stack.rbegin() + 3);
                 break;
-            case DW_OP_deref:
+            case DW_OP_deref: {
                 // pushes the value stored at the address on the top of the
                 // stack to the stack
                 auto addr = virt_addr{stack.back()};
                 stack.back() = proc.read_memory_as<std::uint64_t>(addr);
                 break;
+            }
             case DW_OP_deref_size: {
                 auto addr = virt_addr{stack.back()};
                 auto size_to_read = cur.u8();
@@ -2174,4 +2194,15 @@ gsdb::dwarf_expression::result gsdb::attr::as_evaluated_location(
     } else {
         error::send("Invalid location type!");
     }
+}
+
+std::optional<gsdb::die> gsdb::dwarf::find_global_variable(
+    std::string name) const {
+    index();
+    auto it = global_variable_index_.find(name);
+    if (it != global_variable_index_.end()) {
+        cursor cur({it->second.pos, it->second.cu->data().end()});
+        return parse_die(*it->second.cu, cur);
+    }
+    return std::nullopt;
 }

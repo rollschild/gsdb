@@ -32,6 +32,7 @@
 
 #include "libgsdb/breakpoint.hpp"
 #include "libgsdb/breakpoint_site.hpp"
+#include "libgsdb/detail/dwarf.h"
 #include "libgsdb/disassembler.hpp"
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/error.hpp"
@@ -79,6 +80,7 @@ catchpoint  - Commands for operating on catchpoints
 down        - Select the stack frame below the current one
 up          - Select the stack frame above the current one
 thread      - Commands for operating on threads
+variable    - Commands for operating on variables
 )";
     } else if (is_prefix(args[1], "register")) {
         std::cerr << R"(Available commands:
@@ -125,6 +127,10 @@ write <address> <bytes>
         std::cerr << R"(Available commands:
 list
 select <thread-ID>
+)";
+    } else if (is_prefix(args[1], "variable")) {
+        std::cerr << R"(Available commands:
+read <variable>
 )";
     } else {
         std::cerr << "No help available on that\n";
@@ -913,6 +919,27 @@ void handle_thread_command(gsdb::target& target,
     }
 }
 
+void handle_variable_command(gsdb::target& target,
+                             const std::vector<std::string>& args) {
+    if (args.size() < 3) {
+        print_help({"help", "variable"});
+        return;
+    }
+
+    if (is_prefix(args[1], "read")) {
+        auto die =
+            target.get_main_elf().get_dwarf().find_global_variable(args[2]);
+        auto loc = die.value()[DW_AT_location].as_evaluated_location(
+            target.get_process(), target.get_stack().current_frame().regs,
+            false);
+        auto value = target.read_location_data(loc, 8);
+        std::uint64_t res = 0;
+        std::copy(value.begin(), value.end(),
+                  reinterpret_cast<std::byte*>(&res));
+        std::cout << "Value: " << res << '\n';
+    }
+}
+
 void handle_command(std::unique_ptr<gsdb::target>& target,
                     std::string_view line) {
     auto args = split(line, ' ');
@@ -961,6 +988,8 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
         print_backtrace(*target);
     } else if (is_prefix(command, "thread")) {
         handle_thread_command(*target, args);
+    } else if (is_prefix(command, "variable")) {
+        handle_variable_command(*target, args);
     } else {
         std::cerr << "Unknown command!\n";
     }

@@ -257,7 +257,7 @@ class attr {
     /**
      * To retrieve the attribute's contents as location list
      */
-    location_list as_location(bool in_frame_info) const;
+    location_list as_location_list(bool in_frame_info) const;
     /**
      * Indicate whether the given attribute represents a single location
      * description or a location list, and then evaluate the contents
@@ -477,6 +477,8 @@ class dwarf {
 
     const call_frame_information& cfi() const { return *cfi_; }
 
+    std::optional<die> find_global_variable(std::string name) const;
+
    private:
     const elf* elf_;
 
@@ -490,7 +492,7 @@ class dwarf {
     // Index the entire set of DIEs in the `dwarf` object
     void index() const;
     // index a single DIE
-    void index_die(const die& current) const;
+    void index_die(const die& current, bool in_function = false) const;
 
     struct index_entry {
         const compile_unit* cu;
@@ -509,6 +511,8 @@ class dwarf {
     mutable std::unordered_multimap<std::string, index_entry> function_index_;
 
     std::unique_ptr<call_frame_information> cfi_;
+    mutable std::unordered_multimap<std::string, index_entry>
+        global_variable_index_;
 };
 
 struct source_location {
