@@ -28,6 +28,7 @@ add_test_cpp_target(step)
 add_test_cpp_target(marshmallow)
 add_test_cpp_target(multi_threaded)
 add_test_cpp_target(global_variable)
+add_test_cpp_target(member_pointer)
 
 # SHARED: build a shared lib, rather than a static one
 add_library(meow SHARED "libmeow.cpp")

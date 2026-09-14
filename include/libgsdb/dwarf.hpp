@@ -25,6 +25,7 @@ class compile_unit;
 class elf;
 class dwarf;
 class die;
+class type;
 
 class call_frame_information {
    public:
@@ -265,6 +266,8 @@ class attr {
     dwarf_expression::result as_evaluated_location(const process& proc,
                                                    const registers& regs,
                                                    bool in_frame_info) const;
+
+    type as_type() const;
 
    private:
     const compile_unit* cu_;

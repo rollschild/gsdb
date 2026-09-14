@@ -10,6 +10,7 @@
 #include <iterator>
 #include <libgsdb/bit.hpp>
 #include <libgsdb/dwarf.hpp>
+#include <libgsdb/type.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -2205,4 +2206,10 @@ std::optional<gsdb::die> gsdb::dwarf::find_global_variable(
         return parse_die(*it->second.cu, cur);
     }
     return std::nullopt;
+}
+
+gsdb::type gsdb::attr::as_type() const {
+    // DWARF encodes attributes of type `DW_AT_type` as references to the
+    // relevant type DIE
+    return gsdb::type{as_reference()};
 }

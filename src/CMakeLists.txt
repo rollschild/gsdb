@@ -13,7 +13,8 @@ add_library(
   target.cpp
   dwarf.cpp
   stack.cpp
-  breakpoint.cpp)
+  breakpoint.cpp
+  type.cpp)
 # `gsdb::libgsdb` is an alias for `libgsdb`
 #
 # Creates a namespaced alias for the libgsdb target.
