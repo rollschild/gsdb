@@ -822,3 +822,29 @@ Two types: **simple location descriptions** & **composite location descriptions*
 DWARF encodes composite location descriptions as a series of simple location descriptions, each terminated by a single `DW_OP_piece` or `DW_OP_bit_piece` opcode.
 
 Performing a right shift on a signed integer in C++ is implementation-defined behavior, and GCC on x64 defines it to perform an arithmetic shift (as do most implementations).
+
+### Variables and Types
+
+#### Type DIEs
+
+DWARF information expresses types as DIEs
+
+Type DIEs typically refer to one another through their `DW_AT_type` attributes.
+
+Array indices in C++ are of type `std::size_t`, which for x64 is `long unsigned int`.
+
+A **bitfield** is a C++ feature that allows integral types to take up a number of bits not aligned on a byte boundary.
+
+They’re typically used to pack data very tightly to improve cache performance, or to interface with hardware that requires packing data together.
+
+```cpp
+#include <cstdint>
+
+struct cat {
+    const char* name;
+    std::uint8_t age : 5;
+    std::uint8_t color : 3;
+};
+```
+
+**Member pointers** let you refer indirectly to the member data or member functions of a type

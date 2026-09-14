@@ -143,6 +143,10 @@ REPL commands (all prefix-matched, so `c` works for `continue`):
 
 A user-level skill, `cpp-style-review` (`~/.claude/skills/cpp-style-review/`), audits this codebase against Effective Modern C++, the C++ Core Guidelines, and other industry sources. It reports only (no source edits) and writes its findings to `.claude/cpp-style-review-<date>.md`. Invoke with `/cpp-style-review`; the latest report is `.claude/cpp-style-review-2026-09-06.md`.
 
+## Project-structure review
+
+A research report comparing gsdb's Nix flake and CMake layout against current Nix/CMake best practice, with ranked fixes and a migration plan, is at `.claude/nix-cpp-project-best-practices-2026-09-12.md`. The reusable starter it produced lives at `~/projects/cpp-nix-template` (bootstrap: `nix flake init -t ~/projects/cpp-nix-template`).
+
 ## Troubleshooting
 
 ### Clangd false positives with libstdc++
