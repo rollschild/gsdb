@@ -2213,3 +2213,66 @@ gsdb::type gsdb::attr::as_type() const {
     // relevant type DIE
     return gsdb::type{as_reference()};
 }
+
+std::optional<gsdb::die::bitfield_information>
+gsdb::die::get_bitfield_information(std::uint64_t class_byte_size) const {
+    if (!contains(DW_AT_bit_offset) and !contains(DW_AT_data_bit_offset)) {
+        return std::nullopt;
+    }
+    // bitfields always have `DW_AT_bit_size`
+    auto bit_size = (*this)[DW_AT_bit_size].as_int();
+    auto storage_byte_size = contains(DW_AT_byte_size)
+                                 ? (*this)[DW_AT_byte_size].as_int()
+                                 : class_byte_size;
+    auto storage_bit_size = storage_byte_size * 8;
+    std::uint8_t bit_offset = 0;
+    /*
+    MSB                                                            LSB
+    bit S-1                                                        bit 0
+    |<--- offset_field --->|<--- bit_size --->|<--- bit_offset --->|
+                           ^                  ^
+                 field's high bit      field's low bit
+
+    The three regions must sum to the whole width, so:
+
+    offset_field + bit_size + bit_offset = storage_bit_size
+    bit_offset = storage_bit_size - offset_field - bit_size
+    */
+    if (contains(DW_AT_bit_offset)) {
+        // DWARF v2/v3
+        // the value is the distance between the end of the aligned storage and
+        // the end of the data
+        auto offset_field = (*this)[DW_AT_bit_offset].as_int();
+        // calculate the offset to the start of the data by subtracting the sum
+        // of the bit size and the distance to the end of the data from the
+        // storage’s bit size.
+        bit_offset = storage_bit_size - offset_field - bit_size;
+    }
+    if (contains(DW_AT_data_bit_offset)) {
+        // DWARF v4
+        bit_offset = (*this)[DW_AT_data_bit_offset].as_int() % 8;
+    }
+    return bitfield_information{bit_size, storage_byte_size, bit_offset};
+}
+
+gsdb::typed_data gsdb::typed_data::fixup_bitfield(
+    [[maybe_unused]] const gsdb::process& proc,
+    const gsdb::die& member_die) const {
+    // trip any qualifiers and typedefs from the member’s type
+    auto stripped = type_.strip_cv_typedef();
+    auto bitfield_info =
+        member_die.get_bitfield_information(stripped.byte_size());
+    if (bitfield_info) {
+        auto [bit_size, storage_byte_size, bit_offset] = *bitfield_info;
+
+        std::vector<std::byte> fixed_data;
+        fixed_data.resize(storage_byte_size);
+
+        auto dest = reinterpret_cast<std::uint8_t*>(fixed_data.data());
+        auto src = reinterpret_cast<const std::uint8_t*>(data_.data());
+        memcpy_bits(dest, 0, src, bit_offset, bit_size);
+
+        return {fixed_data, type_};
+    }
+    return *this;
+}

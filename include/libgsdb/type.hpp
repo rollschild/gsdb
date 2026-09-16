@@ -1,15 +1,18 @@
 #ifndef GSDB_TYPE_HPP
 #define GSDB_TYPE_HPP
 
+#include <algorithm>
 #include <cstddef>
 #include <libgsdb/dwarf.hpp>
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "libgsdb/detail/dwarf.h"
 
 namespace gsdb {
+class process;
 
 class type {
    public:
@@ -68,6 +71,35 @@ class type {
     // mutable because it's a cache variable that `const` member function can
     // modify
     mutable std::optional<std::size_t> byte_size_;
+};
+
+class typed_data {
+   public:
+    typed_data(std::vector<std::byte> data, type value_type,
+               std::optional<virt_addr> address = std::nullopt)
+        : data_(std::move(data)), type_(value_type), address_(address) {}
+
+    const std::vector<std::byte>& data() const { return data_; }
+    const std::byte* data_ptr() const { return data_.data(); }
+
+    const type& value_type() const { return type_; }
+    std::optional<virt_addr> address() const { return address_; }
+
+    /**
+     * Preprocess bitfield members before visualizing them
+     */
+    typed_data fixup_bitfield(const gsdb::process& proc,
+                              const gsdb::die& member_die) const;
+
+    /**
+     * Returns a string representing the contents of an object of this type
+     */
+    std::string visualize(const gsdb::process& proc, int depth = 0) const;
+
+   private:
+    std::vector<std::byte> data_;
+    type type_;
+    std::optional<virt_addr> address_;
 };
 
 }  // namespace gsdb

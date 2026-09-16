@@ -15,6 +15,7 @@
 #include <libgsdb/watchpoint.hpp>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -243,6 +244,12 @@ class process {
         std::function<void(const stop_reason&)> callback) {
         thread_lifecycle_callback_ = std::move(callback);
     }
+
+    /**
+     * Takes a virtual address to read from and returns the null-terminated
+     * string that resides at that address
+     */
+    std::string read_string(virt_addr address) const;
 
    private:
     // private constructor so that client code must use the static `launch` and

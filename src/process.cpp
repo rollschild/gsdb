@@ -943,3 +943,17 @@ void gsdb::process::populate_existing_threads() {
             tid, thread_state{tid, registers(*this, tid), stop_reason{}});
     }
 }
+
+std::string gsdb::process::read_string(gsdb::virt_addr address) const {
+    std::string ret;
+    while (true) {
+        // read 1KiB data at a time
+        auto data = read_memory(address, 1024);
+        for (auto c : data) {
+            if (c == std::byte{0}) {
+                return ret;
+            }
+            ret.push_back(static_cast<char>(c));
+        }
+    }
+}
