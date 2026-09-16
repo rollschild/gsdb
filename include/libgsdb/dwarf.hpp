@@ -482,6 +482,15 @@ class dwarf {
 
     std::optional<die> find_global_variable(std::string name) const;
 
+    std::optional<die> find_local_variable(std::string name,
+                                           file_addr pc) const;
+    /**
+     * Return a vector of all the `DW_TAG_lexical_block` DIEs to which the given
+     * program counter value belongs, followed by the `DW_TAG_subprogram` DIE to
+     * which these scopes belong.
+     */
+    std::vector<die> scopes_at_address(file_addr address) const;
+
    private:
     const elf* elf_;
 

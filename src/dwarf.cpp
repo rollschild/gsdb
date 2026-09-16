@@ -935,6 +935,18 @@ gsdb::virt_addr read_frame_base_result(
     gsdb::error::send("Unsupported frame base location!");
 }
 
+void scopes_at_address_in_die(const gsdb::die& die, gsdb::file_addr address,
+                              std::vector<gsdb::die>& scopes) {
+    for (auto& c : die.children()) {
+        if (c.contains_address(address)) {
+            // front of the vector will be the most deeply nested scope
+            // containing the given address
+            scopes_at_address_in_die(c, address, scopes);
+            scopes.push_back(c);
+        }
+    }
+}
+
 }  // namespace
 
 gsdb::dwarf::dwarf(const gsdb::elf& parent) : elf_(&parent) {
@@ -2275,4 +2287,30 @@ gsdb::typed_data gsdb::typed_data::fixup_bitfield(
         return {fixed_data, type_};
     }
     return *this;
+}
+
+std::vector<gsdb::die> gsdb::dwarf::scopes_at_address(
+    gsdb::file_addr address) const {
+    auto func = function_containing_address(address);
+    if (!func) return {};
+
+    std::vector<gsdb::die> scopes;
+    scopes_at_address_in_die(*func, address, scopes);
+    scopes.push_back(*func);
+    return scopes;
+}
+
+std::optional<gsdb::die> gsdb::dwarf::find_local_variable(std::string name,
+                                                          file_addr pc) const {
+    auto scopes = scopes_at_address(pc);
+    for (auto& scope : scopes) {
+        for (auto& child : scope.children()) {
+            auto tag = child.abbrev_entry()->tag;
+            if ((tag == DW_TAG_variable or tag == DW_TAG_formal_parameter) and
+                child.name() == name) {
+                return child;
+            }
+        }
+    }
+    return std::nullopt;
 }
