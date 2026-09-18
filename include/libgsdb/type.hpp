@@ -96,6 +96,11 @@ class typed_data {
      */
     std::string visualize(const gsdb::process& proc, int depth = 0) const;
 
+    typed_data deref_pointer(const process& proc) const;
+    typed_data read_member(const process& proc,
+                           std::string_view member_name) const;
+    typed_data index(const process& proc, std::size_t index) const;
+
    private:
     std::vector<std::byte> data_;
     type type_;

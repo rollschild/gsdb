@@ -15,6 +15,7 @@
 #include <libgsdb/dwarf.hpp>
 #include <libgsdb/process.hpp>
 #include <libgsdb/target.hpp>
+#include <libgsdb/type.hpp>
 #include <regex>
 #include <set>
 #include <string>
@@ -998,4 +999,76 @@ TEST_CASE("DWARF expression work", "[dwarf]") {
     REQUIRE(pieces[0].offset == 0);
     REQUIRE(pieces[1].offset == 0);
     REQUIRE(pieces[2].offset == 12);
+}
+
+TEST_CASE("Global variables", "[variable]") {
+    auto path = std::string(TARGETS_DIR) + "/global_variable";
+    auto target = target::launch(path);
+    auto& proc = target->get_process();
+
+    target->create_function_breakpoint("main").enable();
+    proc.resume();
+    proc.wait_on_signal();
+
+    auto name = target->resolve_indirect_name("me.pets[0].name",
+                                              target->get_pc_file_address());
+    auto name_vis = name.visualize(target->get_process());
+    REQUIRE(name_vis == "\"French Fries\"");
+
+    auto cats = target->resolve_indirect_name("cats[1].age",
+                                              target->get_pc_file_address());
+    auto cats_vis = cats.visualize(target->get_process());
+    REQUIRE(cats_vis == "0");
+}
+
+TEST_CASE("Local variables", "[variable]") {
+    auto dev_null = open("/dev/null", O_WRONLY);
+    auto path = std::string(TARGETS_DIR) + "/blocks";
+    auto target = target::launch(path, dev_null);
+    auto& proc = target->get_process();
+
+    target->create_function_breakpoint("main").enable();
+    proc.resume();
+    proc.wait_on_signal();
+    target->step_over();
+
+    auto var_data =
+        target->resolve_indirect_name("i", target->get_pc_file_address());
+    REQUIRE(from_bytes<std::uint32_t>(var_data.data_ptr()) == 1);
+
+    target->step_over();
+    target->step_over();
+
+    var_data =
+        target->resolve_indirect_name("i", target->get_pc_file_address());
+    REQUIRE(from_bytes<std::uint32_t>(var_data.data_ptr()) == 2);
+
+    target->step_over();
+    target->step_over();
+
+    var_data =
+        target->resolve_indirect_name("i", target->get_pc_file_address());
+    REQUIRE(from_bytes<std::uint32_t>(var_data.data_ptr()) == 3);
+
+    close(dev_null);
+}
+
+TEST_CASE("Member pointers", "[variable]") {
+    auto path = std::string(TARGETS_DIR) + "/member_pointer";
+    auto target = target::launch(path);
+    auto& proc = target->get_process();
+
+    target->create_line_breakpoint("member_pointer.cpp", 16).enable();
+    proc.resume();
+    proc.wait_on_signal();
+
+    auto data_ptr = target->resolve_indirect_name(
+        "data_ptr", target->get_pc_file_address());
+    auto data_vis = data_ptr.visualize(proc);
+    REQUIRE(data_vis == "0x0");
+
+    auto func_ptr = target->resolve_indirect_name(
+        "func_ptr", target->get_pc_file_address());
+    auto func_vis = func_ptr.visualize(proc);
+    REQUIRE(func_vis != "0x0");
 }

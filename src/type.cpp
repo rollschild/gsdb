@@ -6,6 +6,7 @@
 #include <libgsdb/type.hpp>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -251,5 +252,77 @@ std::string gsdb::typed_data::visualize(const gsdb::process& proc,
             return typed_data{data_, die[DW_AT_type].as_type()}.visualize(proc);
         default:
             gsdb::error::send("Unsupported type!");
+    }
+}
+
+gsdb::typed_data gsdb::typed_data::deref_pointer(const process& proc) const {
+    auto stripped_type_die = type_.strip_cv_typedef().get_die();
+    auto tag = stripped_type_die.abbrev_entry()->tag;
+    if (tag != DW_TAG_pointer_type) {
+        gsdb::error::send("Not a pointer type!");
+    }
+    virt_addr address{gsdb::from_bytes<std::uint64_t>(data_.data())};
+    auto value_type = stripped_type_die[DW_AT_type].as_type();
+    auto data_vec = proc.read_memory(address, value_type.byte_size());
+    return {std::move(data_vec), value_type, address};
+}
+
+/**
+ * Find the DIE corresponding to the member with the given name and read the
+ * data at its location
+ */
+gsdb::typed_data gsdb::typed_data::read_member(
+    const process& proc, std::string_view member_name) const {
+    auto die = type_.get_die();
+    auto children = die.children();
+    auto it = std::find_if(children.begin(), children.end(), [&](auto& child) {
+        return child.name().value_or("") == member_name;
+    });
+    if (it == children.end()) {
+        gsdb::error::send("No such member!");
+    }
+
+    auto var = *it;
+    auto value_type = var[DW_AT_type].as_type();
+
+    auto byte_offset = var.contains(DW_AT_data_member_location)
+                           ? var[DW_AT_data_member_location].as_int()
+                           : var[DW_AT_data_bit_offset].as_int() / 8;
+    auto data_start = data_.begin() + byte_offset;
+    std::vector<std::byte> member_data{data_start,
+                                       data_start + value_type.byte_size()};
+
+    auto data = address_ ? typed_data{std::move(member_data), value_type,
+                                      *address_ + byte_offset}
+                         : typed_data{std::move(member_data), value_type};
+    return data.fixup_bitfield(proc, var);
+}
+
+gsdb::typed_data gsdb::typed_data::index(const process& proc,
+                                         std::size_t index) const {
+    auto parent_type = type_.strip_cv_typedef().get_die();
+    auto tag = parent_type.abbrev_entry()->tag;
+    if (tag != DW_TAG_array_type and tag != DW_TAG_pointer_type) {
+        gsdb::error::send("Not an array or pointer type!");
+    }
+
+    // calculate the size of the values that are pointed to or stored in the
+    // array
+    auto value_type = parent_type[DW_AT_type].as_type();
+    auto element_size = value_type.byte_size();
+    auto offset = index * element_size;
+    if (tag == DW_TAG_pointer_type) {
+        //  interpret the given data as a virtual address
+        virt_addr address{gsdb::from_bytes<std::uint64_t>(data_.data())};
+        address += offset;
+        auto data_vec = proc.read_memory(address, element_size);
+        return {std::move(data_vec), value_type, address};
+    } else {
+        std::vector<std::byte> data_vec{data_.begin() + offset,
+                                        data_.begin() + offset + element_size};
+        if (address_) {
+            return {std::move(data_vec), value_type, *address_ + offset};
+        }
+        return {std::move(data_vec), value_type};
     }
 }

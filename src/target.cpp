@@ -20,13 +20,16 @@
 #include "libgsdb/bit.hpp"
 #include "libgsdb/breakpoint.hpp"
 #include "libgsdb/breakpoint_site.hpp"
+#include "libgsdb/detail/dwarf.h"
 #include "libgsdb/disassembler.hpp"
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/elf.hpp"
 #include "libgsdb/error.hpp"
+#include "libgsdb/parse.hpp"
 #include "libgsdb/process.hpp"
 #include "libgsdb/register_info.hpp"
 #include "libgsdb/stack.hpp"
+#include "libgsdb/type.hpp"
 
 namespace {
 /**
@@ -66,6 +69,32 @@ std::filesystem::path dump_vdso(const gsdb::process& proc,
                     vdso_bytes.size());
     return vdso_dump_path;
 }
+
+gsdb::typed_data get_initial_variable_data(const gsdb::target& target,
+                                           std::string name,
+                                           gsdb::file_addr pc) {
+    auto var = target.find_variable(name, pc);
+    if (!var) {
+        gsdb::error::send("Variable not found!");
+    }
+    auto var_type = var.value()[DW_AT_type].as_type();
+
+    auto loc = var.value()[DW_AT_location].as_evaluated_location(
+        target.get_process(), target.get_stack().current_frame().regs, false);
+    auto data_vec = target.read_location_data(loc, var_type.byte_size());
+
+    std::optional<gsdb::virt_addr> address;
+    if (auto single_loc =
+            std::get_if<gsdb::dwarf_expression::simple_location>(&loc)) {
+        if (auto addr_res = std::get_if<gsdb::dwarf_expression::address_result>(
+                single_loc)) {
+            address = addr_res->address;
+        }
+    }
+
+    return {std::move(data_vec), var_type, address};
+}
+
 }  // namespace
 
 std::unique_ptr<gsdb::target> gsdb::target::launch(
@@ -564,4 +593,65 @@ std::vector<std::byte> gsdb::target::read_location_data(
         return data;
     }
     gsdb::error::send("Invalid location type!");
+}
+
+std::optional<gsdb::die> gsdb::target::find_variable(std::string name,
+                                                     file_addr pc) const {
+    auto& dwarf = pc.elf_file()->get_dwarf();
+    auto local = dwarf.find_local_variable(name, pc);
+    if (local) return local;
+
+    std::optional<die> global = std::nullopt;
+    // Loop all ELF files
+    elves_.for_each([&](auto& elf) {
+        auto& dwarf = elf.get_dwarf();
+        auto found = dwarf.find_global_variable(name);
+        if (found) {
+            global = *found;
+        }
+    });
+    return global;
+}
+
+/**
+ * Supports `.`, `->`, and `[]` for accessing members and array elements
+ */
+gsdb::typed_data gsdb::target::resolve_indirect_name(std::string name,
+                                                     file_addr pc) const {
+    auto op_pos = name.find_first_of(".-[");
+
+    auto var_name = name.substr(0, op_pos);
+    [[maybe_unused]] auto& dwarf = pc.elf_file()->get_dwarf();
+
+    auto data = get_initial_variable_data(*this, var_name, pc);
+
+    while (op_pos != std::string::npos) {
+        if (name[op_pos] == '-') {
+            if (name[op_pos + 1] != '>') {
+                gsdb::error::send("Invalid operator!");
+            }
+            data = data.deref_pointer(get_process());
+            op_pos++;
+        }
+        if (name[op_pos] == '.' or name[op_pos] == '>') {
+            auto member_name_start = op_pos + 1;
+            op_pos = name.find_first_of(".-[", member_name_start);
+            auto member_name =
+                name.substr(member_name_start, op_pos - member_name_start);
+            data = data.read_member(get_process(), member_name);
+            name = name.substr(member_name_start);
+        } else if (name[op_pos] == '[') {
+            auto int_end = name.find(']', op_pos);
+            auto index_str = name.substr(op_pos + 1, int_end - op_pos - 1);
+            auto index = to_integral<std::size_t>(index_str);
+            if (!index) {
+                gsdb::error::send("Invalid index!");
+            }
+            data = data.index(get_process(), *index);
+            name = name.substr(int_end + 1);
+        }
+        op_pos = name.find_first_of(".-[");
+    }
+
+    return data;
 }

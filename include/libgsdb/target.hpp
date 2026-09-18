@@ -31,6 +31,9 @@ struct thread {
     thread_state* state;
     stack frames;
 };
+
+class typed_data;
+
 /**
  * Manage the symbolic level of the program that we’re debugging, such as
  * storing the `gsdb::elf` object for the program, reading debug information,
@@ -144,6 +147,14 @@ class target {
     std::vector<std::byte> read_location_data(
         const dwarf_expression::result& loc, std::size_t size,
         std::optional<pid_t> otid = std::nullopt) const;
+
+    typed_data resolve_indirect_name(std::string name, file_addr pc) const;
+
+    /**
+     * Finds a local variable in the current scope, if one exists, and otherwise
+     * tries to find a global variable with the given name.
+     */
+    std::optional<die> find_variable(std::string name, file_addr pc) const;
 
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
