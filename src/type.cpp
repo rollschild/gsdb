@@ -182,6 +182,21 @@ std::size_t gsdb::type::byte_size() const {
 }
 
 std::size_t gsdb::type::compute_byte_size() const {
+    if (!is_from_dwarf()) {
+        switch (get_builtin_type()) {
+            case gsdb::builtin_type::boolean:
+                return 1;
+            case gsdb::builtin_type::character:
+                return 1;
+            case gsdb::builtin_type::integer:
+                return 8;
+            case gsdb::builtin_type::floating_point:
+                return 8;
+            case gsdb::builtin_type::string:
+                return 8;
+        }
+    }
+    auto& die_ = std::get<gsdb::die>(info_);
     auto tag = die_.abbrev_entry()->tag;
 
     if (tag == DW_TAG_pointer_type) {

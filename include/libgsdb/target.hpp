@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <libgsdb/elf.hpp>
 #include <libgsdb/process.hpp>
+#include <libgsdb/type.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -148,7 +149,12 @@ class target {
         const dwarf_expression::result& loc, std::size_t size,
         std::optional<pid_t> otid = std::nullopt) const;
 
-    typed_data resolve_indirect_name(std::string name, file_addr pc) const;
+    struct resolve_indirect_name_result {
+        std::optional<typed_data> variable;
+        std::vector<die> funcs;
+    };
+    resolve_indirect_name_result resolve_indirect_name(std::string name,
+                                                       file_addr pc) const;
 
     /**
      * Finds a local variable in the current scope, if one exists, and otherwise

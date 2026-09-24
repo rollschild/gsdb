@@ -70,6 +70,17 @@ inline void memcpy_bits(std::uint8_t* dest, std::uint32_t dest_bit,
     }
 }
 
+template <class From>
+gsdb::span<const std::byte> to_byte_span(const From& from) {
+    return {as_bytes(from), sizeof(From)};
+}
+template <class From>
+std::vector<std::byte> to_byte_vec(const From& from) {
+    std::vector<std::byte> ret(sizeof(From));
+    std::memcpy(ret.data(), as_bytes(from), sizeof(From));
+    return ret;
+}
+
 }  // namespace gsdb
 
 #endif

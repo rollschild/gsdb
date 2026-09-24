@@ -1,9 +1,12 @@
 #include <cxxabi.h>
 #include <elf.h>
+#include <sys/types.h>
 
 #include <algorithm>
+#include <cctype>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -73,6 +77,14 @@ std::filesystem::path dump_vdso(const gsdb::process& proc,
 gsdb::typed_data get_initial_variable_data(const gsdb::target& target,
                                            std::string name,
                                            gsdb::file_addr pc) {
+    if (name[0] == '$') {
+        auto index = gsdb::to_integral<std::size_t>(name.substr(1));
+        if (!index) {
+            gsdb::error::send("Invalid expression result index");
+        }
+        return target.get_expression_result(*index);
+    }
+
     auto var = target.find_variable(name, pc);
     if (!var) {
         gsdb::error::send("Variable not found!");
@@ -93,6 +105,113 @@ gsdb::typed_data get_initial_variable_data(const gsdb::target& target,
     }
 
     return {std::move(data_vec), var_type, address};
+}
+
+/**
+ * Turns a string argument into an sdb::typed_data object.
+ */
+gsdb::typed_data parse_argument(gsdb::target& target, pid_t tid,
+                                std::string_view arg) {
+    if (arg.empty()) {
+        gsdb::error::send("Empty argument!");
+    }
+    if (arg.size() > 2 and arg[0] == '"' and arg[arg.size() - 1] == '"') {
+        // Need to copy this string into the memory of the running process
+        // TODO
+        // First, need to allocate enough memory in the running process to store
+        // the data: excluding the two `"`, but including null terminator
+        auto ptr = target.inferior_malloc(arg.size() - 1);
+        std::string arg_str{arg.substr(1, arg.size() - 2)};
+        auto data_ptr = reinterpret_cast<const std::byte*>(arg_str.data());
+        gsdb::span<const std::byte> data = {data_ptr, arg_str.size() + 1};
+        target.get_process().write_memory(ptr, data);
+        return {gsdb::to_byte_vec(ptr), gsdb::builtin_type::string};
+    } else if (arg == "true" or arg == "false") {
+        auto value = arg == "true";
+        return {gsdb::to_byte_vec(value), gsdb::builtin_type::boolean};
+    } else if (arg[0] == '\'') {
+        if (arg.size() != 3 or arg[2] != '\'') {
+            gsdb::error::send("Invalid character literal!");
+        }
+        return {gsdb::to_byte_vec(arg[1]), gsdb::builtin_type::character};
+    } else if (arg[0] == '-' or std::isdigit(arg[0])) {
+        if (arg.find(".") != std::string::npos) {
+            auto value = gsdb::to_float<double>(arg);
+            if (!value) {
+                gsdb::error::send("Invalid floating point literal!");
+            }
+            return {gsdb::to_byte_vec(*value),
+                    gsdb::builtin_type::floating_point};
+        } else {
+            auto value = gsdb::to_integral<std::int64_t>(arg);
+            if (!value) {
+                gsdb::error::send("Invalid integer literal!");
+            }
+            return {gsdb::to_byte_vec(*value), gsdb::builtin_type::integer};
+        }
+    } else {
+        auto pc = target.get_pc_file_address(tid);
+        auto res = target.resolve_indirect_name(std::string(arg), pc);
+        if (!res.funcs.empty()) {
+            gsdb::error::send("Nested function calls not supported!");
+        }
+
+        return *res.Variable;
+    }
+}
+
+std::vector<gsdb::typed_data> collect_arguments(
+    gsdb::target& target, pid_t tid, std::string_view arg_string,
+    const std::vector<gsdb::die>& funcs,
+    std::optional<gsdb::typed_data> object) {
+    std::vector<gsdb::typed_data> args;
+    auto& proc = target.get_process();
+
+    if (object) {
+        // Implicit object argument
+        std::vector<std::byte> data;
+        if (object->address()) {
+            data = gsdb::to_byte_vec(*object->address());
+        } else {
+            // spill the object to the stack
+            auto& regs = proc.get_registers(tid);
+            // read current stack pointer value
+            auto rsp =
+                regs.read_by_id_as<std::uint64_t>(gsdb::register_id::rsp);
+            // subtract the size of the object, because stack grows downward
+            // towards zero
+            rsp -= object->value_type().byte_size();
+            // write object's data into new stack pointer position
+            proc.write_memory(gsdb::virt_addr{rsp}, object->data());
+            // update the stack pointer in the thread's registers
+            regs.write_by_id(gsdb::register_id::rsp, rsp, true);
+            // store the new value of the stack pointer as the argument data
+            data = gsdb::to_byte_vec(rsp);
+        }
+        // Retrieve the DIE referenced by the function’s DW_AT_object_pointer
+        // attribute.
+        // This DIE should have the tag `DW_TAG_formal_parameter` with a
+        // `DW_AT_type` attribute that references the type of the `this` pointer
+        auto obj_ptr_die = funcs[0][DW_AT_object_pointer].as_reference();
+        auto this_type = obj_ptr_die[DW_AT_type].as_type();
+        // representing the `this` pointer
+        args.push_back({std::move(data), this_type});
+    }
+
+    auto args_start = 1;  // excluding the opening `'('`
+    auto args_end = arg_string.find(')');
+
+    while (args_start < args_end) {
+        auto comma_pos = arg_string.find(',', args_start);
+        if (comma_pos == std::string::npos) {
+            comma_pos = args_end;
+        }
+        auto arg_expr = arg_string.substr(args_start, comma_pos - args_start);
+        args.push_back(parse_argument(target, tid, arg_expr));
+        args_start = comma_pos + 1;
+    }
+
+    return args;
 }
 
 }  // namespace
@@ -614,11 +733,19 @@ std::optional<gsdb::die> gsdb::target::find_variable(std::string name,
 }
 
 /**
- * Supports `.`, `->`, and `[]` for accessing members and array elements
+ * Supports `.`, `->`, and `[]` for accessing members and array elements;
+ * supports functions.
  */
-gsdb::typed_data gsdb::target::resolve_indirect_name(std::string name,
-                                                     file_addr pc) const {
-    auto op_pos = name.find_first_of(".-[");
+gsdb::target::resolve_indirect_name_result gsdb::target::resolve_indirect_name(
+    std::string name, file_addr pc) const {
+    auto op_pos = name.find_first_of(".-[(");
+
+    if (name[op_pos] == '(') {
+        // non-member function
+        auto func_name = name.substr(0, op_pos);
+        auto funcs = find_functions(func_name);
+        return {std::nullopt, std::move(funcs.dwarf_functions)};
+    }
 
     auto var_name = name.substr(0, op_pos);
     [[maybe_unused]] auto& dwarf = pc.elf_file()->get_dwarf();
@@ -635,9 +762,27 @@ gsdb::typed_data gsdb::target::resolve_indirect_name(std::string name,
         }
         if (name[op_pos] == '.' or name[op_pos] == '>') {
             auto member_name_start = op_pos + 1;
-            op_pos = name.find_first_of(".-[", member_name_start);
+            op_pos = name.find_first_of(".-[(,", member_name_start);
             auto member_name =
                 name.substr(member_name_start, op_pos - member_name_start);
+            if (name[op_pos] == '(') {
+                // member function
+                std::vector<die> funcs;
+                auto stripped_value_type =
+                    data.value_type().strip_cvref_typedef();
+                for (auto& child : stripped_value_type.get_die().children()) {
+                    if (child.abbrev_entry()->tag == DW_TAG_subprogram and
+                        // non-static member function: the `this` pointer
+                        child.contains(DW_AT_object_pointer) and
+                        child.name() == member_name) {
+                        funcs.push_back(child);
+                    }
+                }
+                if (funcs.empty()) {
+                    gsdb::error::send("No such member function!");
+                }
+                return {std::move(data), std::move(funcs)};
+            }
             data = data.read_member(get_process(), member_name);
             name = name.substr(member_name_start);
         } else if (name[op_pos] == '[') {
@@ -650,8 +795,8 @@ gsdb::typed_data gsdb::target::resolve_indirect_name(std::string name,
             data = data.index(get_process(), *index);
             name = name.substr(int_end + 1);
         }
-        op_pos = name.find_first_of(".-[");
+        op_pos = name.find_first_of(".-[(,");
     }
 
-    return data;
+    return {std::move(data), {}};
 }

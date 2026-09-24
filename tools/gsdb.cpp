@@ -952,7 +952,7 @@ void handle_variable_read_command(gsdb::target& target,
     auto name = args[2];
     auto pc = target.get_pc_file_address();
     auto data = target.resolve_indirect_name(name, pc);
-    auto str = data.visualize(target.get_process());
+    auto str = data.variable->visualize(target.get_process());
     std::print("Value: {}\n", str);
 }
 

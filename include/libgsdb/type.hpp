@@ -7,18 +7,27 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "libgsdb/detail/dwarf.h"
+#include "libgsdb/error.hpp"
 
 namespace gsdb {
+enum class builtin_type { string, character, integer, boolean, floating_point };
 class process;
 
 class type {
    public:
-    type(die die) : die_(std::move(die)) {}
+    type(die die) : info_(std::move(die)) {}
+    type(builtin_type type) : info_(type) {}
 
-    die get_die() const { return die_; }
+    die get_die() const {
+        if (!std::holds_alternative<die>(info_)) {
+            gsdb::error::send("Type is not DWARF info!");
+        }
+        return std::get<die>(info_);
+    }
     std::size_t byte_size() const;
     bool is_char_type() const;
 
@@ -63,14 +72,23 @@ class type {
                      DW_TAG_pointer_type>();
     }
 
+    builtin_type get_builtin_type() const {
+        if (!std::holds_alternative<builtin_type>(info_)) {
+            gsdb::error::send("Type is not a builtin type!");
+        }
+        return std::get<builtin_type>(info_);
+    }
+
+    bool is_from_dwarf() const { return std::holds_alternative<die>(info_); }
+
    private:
     std::size_t compute_byte_size() const;
-
-    die die_;
 
     // mutable because it's a cache variable that `const` member function can
     // modify
     mutable std::optional<std::size_t> byte_size_;
+
+    std::variant<die, builtin_type> info_;
 };
 
 class typed_data {

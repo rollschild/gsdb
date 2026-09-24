@@ -848,3 +848,18 @@ struct cat {
 ```
 
 **Member pointers** let you refer indirectly to the member data or member functions of a type
+
+### Expression Evaluation
+
+#### Supporting Expression Evaluation
+
+Here are the main steps our expression evaluator needs to perform:
+
+1. Parse the function name and arguments.
+2. Locate the function to be called (potentially performing overload resolution).
+3. Set up the stack and registers with the program arguments, as specified in the SYSV and Itanium ABIs.
+4. Push the return address onto the stack (we’ll discuss exactly where the function call should return to shortly).
+5. Set a breakpoint on the return address.
+6. Set the program counter to the start of the function that we want to call.
+7. Continue the process until the return address breakpoint is hit.
+8. Read the result of the function from the stack or registers, as specified in the SYSV and Itanium ABIs.
