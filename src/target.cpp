@@ -214,6 +214,42 @@ std::vector<gsdb::typed_data> collect_arguments(
     return args;
 }
 
+gsdb::die resolve_overload(const std::vector<gsdb::die>& funcs,
+                           const std::vector<gsdb::typed_data>& args) {
+    std::optional<gsdb::die> matching_func;
+    for (auto& func : funcs) {
+        bool matched = true;
+        auto arg_it = args.begin();
+        auto params = func.parameter_types();
+
+        if (args.size() == params.size()) {
+            for (auto param_it = params.begin(); arg_it != args.end();
+                 ++param_it, ++arg_it) {
+                if (*param_it != arg_it->value_type()) {
+                    matched = false;
+                    break;
+                }
+            }
+
+        } else {
+            matched == false;
+        }
+
+        if (matched) {
+            if (matching_func) {
+                gsdb::error::send("Ambiguous function call!");
+            }
+            matching_func = func;
+        }
+    }
+
+    if (!matching_func) {
+        gsdb::error::send("No matching function!");
+    }
+
+    return *matching_func;
+}
+
 }  // namespace
 
 std::unique_ptr<gsdb::target> gsdb::target::launch(

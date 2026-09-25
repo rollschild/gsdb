@@ -582,6 +582,8 @@ class die {
     std::optional<bitfield_information> get_bitfield_information(
         std::uint64_t class_byte_size) const;
 
+    std::vector<type> parameter_types() const;
+
    private:
     const std::byte* pos_ = nullptr;
     const compile_unit* cu_ = nullptr;

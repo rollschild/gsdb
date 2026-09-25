@@ -2314,3 +2314,22 @@ std::optional<gsdb::die> gsdb::dwarf::find_local_variable(std::string name,
     }
     return std::nullopt;
 }
+
+/**
+ * Retrieve a list of function DIE's parameter types
+ */
+std::vector<gsdb::type> gsdb::die::parameter_types() const {
+    std::vector<type> ret;
+    if (abbrev_->tag != DW_TAG_subprogram) {
+        // if DIE is not a subprogram
+        return ret;
+    }
+
+    for (auto& c : children()) {
+        if (c.abbrev_entry()->tag == DW_TAG_formal_parameter) {
+            ret.push_back(c[DW_AT_type].as_type());
+        }
+    }
+
+    return ret;
+}

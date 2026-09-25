@@ -81,6 +81,9 @@ class type {
 
     bool is_from_dwarf() const { return std::holds_alternative<die>(info_); }
 
+    bool operator==(const type& rhs) const;
+    bool operator!=(const type& rhs) const { return !(*this == rhs); }
+
    private:
     std::size_t compute_byte_size() const;
 
