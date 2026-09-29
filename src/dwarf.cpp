@@ -1421,6 +1421,23 @@ void gsdb::dwarf::index_die(const die& current, bool in_function) const {
         }
     }
 
+    // add index entries for any function it finds with a DW_AT_specification or
+    // DW_AT_abstract_origin attribute
+    if (is_function) {
+        if (current.contains(DW_AT_specification)) {
+            index_entry entry{current.cu(), current.position()};
+            // maps the byte position of the DIE pointed to by that attribute to
+            // an index entry that corresponds to the definition DIE
+            member_function_index_.insert(std::make_pair(
+                current[DW_AT_specification].as_reference().position(), entry));
+        } else if (current.contains(DW_AT_abstract_origin)) {
+            index_entry entry{current.cu(), current.position()};
+            member_function_index_.insert(std::make_pair(
+                current[DW_AT_abstract_origin].as_reference().position(),
+                entry));
+        }
+    }
+
     auto has_location = current.contains(DW_AT_location);
     auto is_variable = current.abbrev_entry()->tag == DW_TAG_variable;
 
@@ -2332,4 +2349,22 @@ std::vector<gsdb::type> gsdb::die::parameter_types() const {
     }
 
     return ret;
+}
+
+std::optional<gsdb::die> gsdb::dwarf::get_member_function_definition(
+    const gsdb::die& declaration) const {
+    // ensure that the DWARF information has been indexed
+    index();
+    auto it = member_function_index_.find(declaration.position());
+    if (it != member_function_index_.end()) {
+        cursor cur({it->second.pos, it->second.cu->data().end()});
+        auto die = parse_die(*it->second.cu, cur);
+        if (die.contains(DW_AT_low_pc) or die.contains(DW_AT_ranges)) {
+            return die;
+        }
+        // could be looking at a chain of definitions, with
+        // `DW_AT_abstract_origin` attribute
+        return get_member_function_definition(die);
+    }
+    return std::nullopt;
 }

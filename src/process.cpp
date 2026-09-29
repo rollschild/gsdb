@@ -957,3 +957,46 @@ std::string gsdb::process::read_string(gsdb::virt_addr address) const {
         }
     }
 }
+
+/**
+ * Set up the return address,
+ * jump to some address that marks the start of a function,
+ * and restore the old set of registers after the function completes.
+ */
+gsdb::registers gsdb::process::inferior_call(gsdb::virt_addr func_addr,
+                                             virt_addr return_addr,
+                                             const registers& regs_to_restore,
+                                             std::optional<pid_t> otid) {
+    auto tid = otid.value_or(current_thread_);
+    auto& regs = get_registers(tid);
+
+    // Set program counter to point to the function we want to call
+    regs.write_by_id(register_id::rip, func_addr.addr(), true);
+    auto rsp = regs.read_by_id_as<std::uint64_t>(register_id::rsp);
+
+    // allocate 8 bytes on stack,
+    rsp -= 8;
+    // copy return address into the allocated space,
+    write_memory(virt_addr{rsp}, to_byte_span(return_addr.addr()));
+    // update stack pointer in the inferior
+    regs.write_by_id(register_id::rsp, rsp, true);
+
+    // assuming the return address already has a breakpoint set on it, as
+    // handled by the caller
+
+    resume(tid);
+    auto reason = wait_on_signal(tid);
+    if (reason.reason != gsdb::process_state::stopped) {
+        gsdb::error::send("Function call failed!");
+    }
+
+    auto new_regs = regs;
+    regs = regs_to_restore;
+    regs.flush();
+
+    if (target_) {
+        target_->notify_stop(reason);
+    }
+
+    return new_regs;
+}

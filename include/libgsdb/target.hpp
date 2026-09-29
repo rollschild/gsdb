@@ -162,6 +162,8 @@ class target {
      */
     std::optional<die> find_variable(std::string name, file_addr pc) const;
 
+    virt_addr inferior_malloc(std::size_t size);
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), main_elf_(obj.get()) {

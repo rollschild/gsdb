@@ -863,3 +863,24 @@ Here are the main steps our expression evaluator needs to perform:
 6. Set the program counter to the start of the function that we want to call.
 7. Continue the process until the return address breakpoint is hit.
 8. Read the result of the function from the stack or registers, as specified in the SYSV and Itanium ABIs.
+
+#### Calling Conventions
+
+##### Classifying Parameters
+
+The SYSV ABI defines several parameter classes that indicate where to locate different arguments:
+
+- **INTEGER** Types passed and returned in general-purpose registers (GPRs)
+- **SSE** Types passed and returned in the lower 8 bytes of the `xmm` registers
+- **SSEUP** Types passed and returned in the upper bytes of the `xmm` registers
+- **X87** Types returned in the lower 8 bytes of the `st` registers
+- **X87UP** Types returned in the upper 2 bytes of the `st` registers
+- **COMPLEX_X87** Types returned in two `st` registers
+- **NO_CLASS** Used as a default class for padding, empty structures, and unions
+- **MEMORY** Types passed and returned on the stack
+
+**Non-trivial for the purposes of calls (NTFPOC)**: As defined in the Itanium ABI, a type is NTFPOC if it has a non-trivial copy constructor, move constructor, or destructor, or if all of its copy and move constructors have been deleted.
+
+##### Parsing Arguments
+
+Arguments that are allocated to the stack are pushed in reverse order: right to left. That is, the leftmost argument ends up at the top of the stack after all arguments are pushed.

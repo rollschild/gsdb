@@ -491,6 +491,14 @@ class dwarf {
      */
     std::vector<die> scopes_at_address(file_addr address) const;
 
+    /**
+     * Find the definition of a member function based on its declaration.
+     * Returns a DIE representing the definition that corresponds to the given
+     * declaration.
+     */
+    std::optional<die> get_member_function_definition(
+        const gsdb::die& declaration) const;
+
    private:
     const elf* elf_;
 
@@ -525,6 +533,11 @@ class dwarf {
     std::unique_ptr<call_frame_information> cfi_;
     mutable std::unordered_multimap<std::string, index_entry>
         global_variable_index_;
+
+    // Maps from the byte position of a member function declaration DIE to an
+    // index entry representing the definition’s DIE
+    mutable std::unordered_map<const std::byte*, index_entry>
+        member_function_index_;
 };
 
 struct source_location {
@@ -577,7 +590,7 @@ class die {
         std::uint64_t bit_size;
         std::uint64_t storage_byte_size;
         // bit offset into that storage at which the data we need lives
-        std::uint8_t file_offset;
+        std::uint8_t bit_offset;
     };
     std::optional<bitfield_information> get_bitfield_information(
         std::uint64_t class_byte_size) const;

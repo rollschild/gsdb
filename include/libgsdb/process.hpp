@@ -251,6 +251,17 @@ class process {
      */
     std::string read_string(virt_addr address) const;
 
+    /**
+     * Return the state of the registers after the function call completes,
+     * _before_ they are restored to their old values
+     */
+    gsdb::registers inferior_call(
+        virt_addr func_addr,
+        /* return address, on which the caller should have set a breakpoint */
+        virt_addr return_addr, const registers& regs_to_restore,
+        /* optional thread to run the function in */ std::optional<pid_t> otid =
+            std::nullopt);
+
    private:
     // private constructor so that client code must use the static `launch` and
     // `attach` functions to construct the `process` object

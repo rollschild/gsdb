@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -835,4 +836,39 @@ gsdb::target::resolve_indirect_name_result gsdb::target::resolve_indirect_name(
     }
 
     return {std::move(data), {}};
+}
+
+gsdb::virt_addr gsdb::target::inferior_malloc(std::size_t size) {
+    // so that `inferior_call` can restore the currect state of registers
+    auto saved_regs = process_->get_registers();
+
+    // libc
+    auto malloc_funcs = find_functions("malloc").elf_functions;
+    auto malloc_func =
+        std::find_if(malloc_funcs.begin(), malloc_funcs.end(), [](auto& sym) {
+            // `st_value`: for a function symbol in an executable or shared
+            // library, it is the function's file address: where the function
+            // sits in that object's own address layout, before the load bias is
+            // added
+            return sym.second->st_value != 0;
+        });
+    if (malloc_func == malloc_funcs.end()) {
+        error::send("malloc not found!");
+    }
+
+    file_addr malloc_addr{*malloc_func->first, malloc_func->second->st_value};
+    auto call_addr = malloc_addr.to_virt_addr();
+
+    // use the entry point as the return address for calls
+    auto entry_point = virt_addr{process_->get_auxv()[AT_ENTRY]};
+    breakpoints_.get_by_address(entry_point).install_hit_handler([&] {
+        return false;
+    });
+
+    process_->get_registers().write_by_id(register_id::rdi, size, true);
+
+    auto new_regs = process_->inferior_call(call_addr, entry_point, saved_regs);
+    auto result = new_regs.read_by_id_as<std::uint64_t>(register_id::rax);
+
+    return virt_addr{result};
 }

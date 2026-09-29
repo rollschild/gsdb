@@ -2,6 +2,7 @@
 #define GSDB_TYPE_HPP
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <libgsdb/dwarf.hpp>
 #include <optional>
@@ -16,6 +17,17 @@
 namespace gsdb {
 enum class builtin_type { string, character, integer, boolean, floating_point };
 class process;
+
+enum class parameter_class {
+    integer,
+    sse,
+    sseup,
+    x87,
+    x87up,
+    complex_x87,
+    memory,
+    no_class,
+};
 
 class type {
    public:
@@ -83,6 +95,14 @@ class type {
 
     bool operator==(const type& rhs) const;
     bool operator!=(const type& rhs) const { return !(*this == rhs); }
+
+    std::size_t alignment() const;
+    bool has_unaligned_fields() const;
+    bool is_non_trivial_for_calls() const;
+    std::array<parameter_class, 2> get_parameter_classes() const;
+
+    bool is_class_type() const;
+    bool is_reference_type() const;
 
    private:
     std::size_t compute_byte_size() const;
