@@ -1082,6 +1082,13 @@ void handle_command(std::unique_ptr<gsdb::target>& target,
         handle_thread_command(*target, args);
     } else if (is_prefix(command, "variable")) {
         handle_variable_command(*target, args);
+    } else if (is_prefix(command, "expression")) {
+        auto expr = line.substr(line.find(' ') + 1);
+        auto ret = target->evaluate_expression(expr);
+        if (ret) {
+            auto str = ret->return_value.visualize(target->get_process());
+            std::print("${}: {}\n", ret->id, str);
+        }
     } else {
         std::cerr << "Unknown command!\n";
     }

@@ -1012,12 +1012,12 @@ TEST_CASE("Global variables", "[variable]") {
 
     auto name = target->resolve_indirect_name("me.pets[0].name",
                                               target->get_pc_file_address());
-    auto name_vis = name.visualize(target->get_process());
+    auto name_vis = name.variable->visualize(proc);
     REQUIRE(name_vis == "\"French Fries\"");
 
     auto cats = target->resolve_indirect_name("cats[1].age",
                                               target->get_pc_file_address());
-    auto cats_vis = cats.visualize(target->get_process());
+    auto cats_vis = cats.variable->visualize(proc);
     REQUIRE(cats_vis == "0");
 }
 
@@ -1034,21 +1034,21 @@ TEST_CASE("Local variables", "[variable]") {
 
     auto var_data =
         target->resolve_indirect_name("i", target->get_pc_file_address());
-    REQUIRE(from_bytes<std::uint32_t>(var_data.data_ptr()) == 1);
+    REQUIRE(from_bytes<std::uint32_t>(var_data.variable->data_ptr()) == 1);
 
     target->step_over();
     target->step_over();
 
     var_data =
         target->resolve_indirect_name("i", target->get_pc_file_address());
-    REQUIRE(from_bytes<std::uint32_t>(var_data.data_ptr()) == 2);
+    REQUIRE(from_bytes<std::uint32_t>(var_data.variable->data_ptr()) == 2);
 
     target->step_over();
     target->step_over();
 
     var_data =
         target->resolve_indirect_name("i", target->get_pc_file_address());
-    REQUIRE(from_bytes<std::uint32_t>(var_data.data_ptr()) == 3);
+    REQUIRE(from_bytes<std::uint32_t>(var_data.variable->data_ptr()) == 3);
 
     close(dev_null);
 }
@@ -1064,11 +1064,11 @@ TEST_CASE("Member pointers", "[variable]") {
 
     auto data_ptr = target->resolve_indirect_name(
         "data_ptr", target->get_pc_file_address());
-    auto data_vis = data_ptr.visualize(proc);
+    auto data_vis = data_ptr.variable->visualize(proc);
     REQUIRE(data_vis == "0x0");
 
     auto func_ptr = target->resolve_indirect_name(
         "func_ptr", target->get_pc_file_address());
-    auto func_vis = func_ptr.visualize(proc);
+    auto func_vis = func_ptr.variable->visualize(proc);
     REQUIRE(func_vis != "0x0");
 }

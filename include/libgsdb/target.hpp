@@ -164,6 +164,15 @@ class target {
 
     virt_addr inferior_malloc(std::size_t size);
 
+    struct evaluate_expression_result {
+        typed_data return_value;
+        std::uint64_t id;
+    };
+    std::optional<evaluate_expression_result> evaluate_expression(
+        std::string_view expr, std::optional<pid_t> otid = std::nullopt);
+
+    const typed_data& get_expression_result(std::size_t i) const;
+
    private:
     target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
         : process_(std::move(proc)), main_elf_(obj.get()) {
@@ -195,6 +204,8 @@ class target {
     elf* main_elf_;
 
     std::unordered_map<pid_t, thread> threads_;
+
+    mutable std::vector<typed_data> expression_results_;
 };
 }  // namespace gsdb
 
