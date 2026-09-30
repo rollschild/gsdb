@@ -251,6 +251,48 @@ gsdb::die resolve_overload(const std::vector<gsdb::die>& funcs,
     return *matching_func;
 }
 
+std::optional<gsdb::typed_data> inferior_call_from_dwarf(
+    gsdb::target& target, gsdb::die func,
+    const std::vector<gsdb::typed_data>& args, gsdb::virt_addr return_addr,
+    pid_t tid) {
+    auto& regs = target.get_process().get_registers(tid);
+    auto saved_regs = regs;
+
+    gsdb::virt_addr call_addr;
+    if (func.contains(DW_AT_low_pc) or or func.contains(DW_AT_ranges)) {
+        call_addr = func.low_pc().to_virt_addr();
+    } else {
+        // probably member function
+        auto def =
+            func.cu()->dwarf_info()->get_member_function_definition(func);
+        if (!def) {
+            gsdb::error::send("No function definition found!");
+        }
+        call_addr = def->low_pc().to_virt_addr();
+    }
+
+    std::optional<gsdb::virt_addr> return_slot;
+    if (func.contains(DW_AT_type)) {
+        auto ret_type = func[DW_AT_type].as_type();
+        // If function has a return value, allocate space for it.
+        // We want user to be able to access these return values later through
+        // numbered variables like `$0`, so we dynamically allocate storage for
+        // the return value rather than allocating it on stack, where it will be
+        // reclaimed after the current function exits
+        return_slot = target.inferior_malloc(ret_type.byte_size());
+    }
+
+    setup_arguments(target, func, args, regs, return_slot);
+    auto new_regs = target.get_process().inferior_call(call_addr, return_addr,
+                                                       saved_regs, tid);
+
+    if (func.contains(DW_AT_type)) {
+        return read_return_value(target, func, *return_slot, new_regs);
+    }
+
+    return std::nullopt;
+}
+
 }  // namespace
 
 std::unique_ptr<gsdb::target> gsdb::target::launch(
