@@ -30,6 +30,7 @@ add_test_cpp_target(multi_threaded)
 add_test_cpp_target(global_variable)
 add_test_cpp_target(member_pointer)
 add_test_cpp_target(blocks)
+add_test_cpp_target(expr)
 
 # SHARED: build a shared lib, rather than a static one
 add_library(meow SHARED "libmeow.cpp")
