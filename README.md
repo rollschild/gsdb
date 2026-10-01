@@ -19,6 +19,23 @@ To test watchpoints:
 gsdb> watch set 0x555555555169 rw 1
 ```
 
+To test expression evaluation:
+
+```console
+./build/tools/gsdb ./build/test/targets/expr
+gsdb> break set main
+gsdb> c
+gsdb> expr get_cat("French Fries")
+gsdb> expr $0.give_command("have a nap")
+gsdb> expr $0.increase_age()
+gsdb> var read $0
+gsdb> expr print_type(42)
+gsdb> expr print_type('e')
+gsdb> expr print_type(s)
+gsdb> expr print_type(t)
+gsdb> expr print_type(b)
+```
+
 ## Project Structure
 
 ### The linking flow in summary
