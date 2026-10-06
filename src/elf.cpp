@@ -185,7 +185,7 @@ void gsdb::elf::build_symbol_maps() {
             symbol_name_map_.insert({demangled_name, &symbol});
             free(demangled_name);
         }
-        symbol_name_map_.insert({mangled_name, &symbol});
+        symbol_name_map_.emplace(mangled_name, &symbol);
 
         // if the symbol has an address and a name
         if (symbol.st_value != 0 and symbol.st_name != 0 and
@@ -203,6 +203,14 @@ void gsdb::elf::build_symbol_maps() {
 std::vector<const Elf64_Sym*> gsdb::elf::get_symbols_by_name(
     std::string_view name) const {
     // structured bindings
+    // - Unordered containers only accept a lookup key of a different type
+    //   when both the hasher and the equality functor declare is_transparent.
+    //   Here string_hash declares it, and std::equal_to<> (the void
+    //   specialization) already does.
+    // - Every key is hashed the same way. Stored std::string keys convert to
+    //   string_view when passed to string_hash, so inserts and lookups agree.
+    // - std::equal_to<> compares std::string with std::string_view directly
+    //   through operator==.
     auto [begin, end] = symbol_name_map_.equal_range(name);
 
     std::vector<const Elf64_Sym*> ret;

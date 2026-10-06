@@ -5,9 +5,11 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -98,6 +100,18 @@ class elf {
     virt_addr load_bias_;
     std::vector<Elf64_Sym> symbol_table_;
 
+    /**
+     * Hashes any string-like key through `std::string_view`. Together with
+     * `std::equal_to<>`, this lets lookup take a std::string_view direcly
+     * instead of building a temporary std::string. C++20 heterogeneous lookup
+     */
+    struct string_hash {
+        using is_transparent = void;
+        std::size_t operator()(std::string_view sv) const {
+            return std::hash<std::string_view>{}(sv);
+        }
+    };
+
     // Maps names to multiple potential symbol table entries
     // In a real ELF binary, the same name can legitimately refer to more than
     // one symbol:
@@ -108,7 +122,9 @@ class elf {
     // `unordered_*` versions are hash tables (average O(1) lookup, no key
     // ordering), while plain map/multimap are balanced trees (O(log n), keys
     // kept sorted).
-    std::unordered_multimap<std::string_view, Elf64_Sym*> symbol_name_map_;
+    std::unordered_multimap<std::string, Elf64_Sym*, string_hash,
+                            std::equal_to<>>
+        symbol_name_map_;
 
     struct range_comparator {
         bool operator()(std::pair<file_addr, file_addr> lhs,
