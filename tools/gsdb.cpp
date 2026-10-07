@@ -554,11 +554,13 @@ void handle_breakpoint_toggle(gsdb::target& target,
     } else if (is_prefix(command, "disable")) {
         bp.disable();
     } else if (is_prefix(command, "delete")) {
-        bp.breakpoint_sites().for_each([&](auto& site) {
-            target.get_process().breakpoint_sites().remove_by_address(
-                site.address());
-        });
+        std::vector<gsdb::virt_addr> addrs;
+        bp.breakpoint_sites().for_each(
+            [&](auto& site) { addrs.push_back(site.address()); });
         target.breakpoints().remove_by_id(*id);
+        for (auto addr : addrs) {
+            target.get_process().breakpoint_sites().remove_by_address(addr);
+        }
     }
 }
 
