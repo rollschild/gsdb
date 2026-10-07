@@ -441,7 +441,7 @@ class compile_unit {
 
 class dwarf {
    public:
-    dwarf(const elf& parent);
+    explicit dwarf(const elf& parent);
     const elf* elf_file() const { return elf_; }
 
     const std::unordered_map<std::uint64_t, abbrev>& get_abbrev_table(

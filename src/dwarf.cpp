@@ -767,7 +767,9 @@ void execute_cfi_instruction(
             case DW_CFA_def_cfa_expression: {
                 auto len = cur.uleb128();
                 auto expr = gsdb::dwarf_expression{
-                    elf, {cur.position(), cur.position() + len}, true};
+                    elf.get_dwarf(),
+                    {cur.position(), cur.position() + len},
+                    true};
                 ctx.cfa_rule = cfa_expr_rule{expr};
                 break;
             }
@@ -814,7 +816,9 @@ void execute_cfi_instruction(
                 auto reg = cur.uleb128();
                 auto len = cur.uleb128();
                 auto expr = gsdb::dwarf_expression{
-                    elf, {cur.position(), cur.position() + len}, true};
+                    elf.get_dwarf(),
+                    {cur.position(), cur.position() + len},
+                    true};
                 ctx.register_rules.emplace(reg, val_expr_rule{expr});
                 break;
             }
@@ -822,7 +826,9 @@ void execute_cfi_instruction(
                 auto reg = cur.uleb128();
                 auto len = cur.uleb128();
                 auto expr = gsdb::dwarf_expression{
-                    elf, {cur.position(), cur.position() + len}, true};
+                    elf.get_dwarf(),
+                    {cur.position(), cur.position() + len},
+                    true};
                 ctx.register_rules.emplace(reg, expr_rule{expr});
                 break;
             }
