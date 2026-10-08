@@ -508,6 +508,9 @@ gsdb::typed_data gsdb::typed_data::index(const process& proc,
         auto data_vec = proc.read_memory(address, element_size);
         return {std::move(data_vec), value_type, address};
     } else {
+        if (element_size == 0 or index >= data_.size() / element_size) {
+            gsdb::error::send("Index out of range!");
+        }
         std::vector<std::byte> data_vec{data_.begin() + offset,
                                         data_.begin() + offset + element_size};
         if (address_) {

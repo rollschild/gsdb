@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -357,9 +358,12 @@ void setup_arguments(gsdb::target& target, gsdb::die func,
                         gsdb::error::send("Unsupported parameter class!");
                 }
 
-                gsdb::byte64 data;
-                std::copy(arg.data().begin() + i, arg.data().begin() + i + 8,
-                          data.begin());
+                gsdb::byte64 data{};
+                const auto& bytes = arg.data();
+                if (i < bytes.size()) {
+                    auto n = std::min<std::size_t>(bytes.size() - i, 8);
+                    std::copy_n(bytes.begin() + i, n, data.begin());
+                }
                 regs.write_by_id(reg, data, true);
             }
         }
@@ -945,9 +949,13 @@ std::vector<std::byte> gsdb::target::read_location_data(
         } else if (auto literal_res =
                        std::get_if<gsdb::dwarf_expression::literal_result>(
                            simple_loc)) {
-            auto begin =
-                reinterpret_cast<const std::byte*>(&literal_res->value);
-            return {begin, begin + size};
+            std::vector<std::byte> bytes(size);  // zero-filled
+            // auto begin =
+            //     reinterpret_cast<const std::byte*>(&literal_res->value);
+            std::memcpy(bytes.data(), &literal_res->value,
+                        std::min(size, sizeof(literal_res->value)));
+            return bytes;
+            // return {begin, begin + size};
         }
     } else if (auto pieces_res =
                    std::get_if<gsdb::dwarf_expression::pieces_result>(&loc)) {
@@ -959,20 +967,25 @@ std::vector<std::byte> gsdb::target::read_location_data(
             // if the bit size is not exactly divisible by eight, integer
             // division will cut off the remainder, but we want to round up
             // toward the nearest byte
-            auto byte_size = (piece.bit_size + 7) / 8;
+            auto src_bytes = (piece.offset + piece.bit_size + 7) / 8;
             auto piece_data =
-                read_location_data(piece.location, byte_size, otid);
+                read_location_data(piece.location, src_bytes, otid);
+            if ((offset + piece.bit_size + 7) / 8 > data.size()) {
+                gsdb::error::send(
+                    "Location pieces exceed the variable's size!");
+            }
             if (offset % 8 == 0 and piece.offset == 0 and
                 piece.bit_size % 8 == 0) {
-                std::copy(piece_data.begin(), piece_data.end(),
-                          data.begin() + offset / 8);
-                offset += piece.bit_size;
+                auto n = std::min<std::size_t>(piece.bit_size / 8,
+                                               piece_data.size());
+                std::copy_n(piece_data.begin(), n, data.begin() + offset / 8);
             } else {
                 auto dest = reinterpret_cast<std::uint8_t*>(data.data());
                 auto src =
                     reinterpret_cast<const std::uint8_t*>(piece_data.data());
-                memcpy_bits(dest, 0, src, piece.offset, piece.bit_size);
+                memcpy_bits(dest, offset, src, piece.offset, piece.bit_size);
             }
+            offset += piece.bit_size;
         }
         return data;
     }
@@ -1137,6 +1150,9 @@ gsdb::target::evaluate_expression(std::string_view expr,
 
 const gsdb::typed_data& gsdb::target::get_expression_result(
     std::size_t i) const {
+    if (i >= expression_results_.size()) {
+        gsdb::error::send("index out of bounds!");
+    }
     auto& res = expression_results_[i];
     // The value in memory may have changed since the expression was executed
     // because a user may pass the result as a reference to a function call that
