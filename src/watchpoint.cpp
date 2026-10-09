@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +23,12 @@ gsdb::watchpoint::watchpoint(gsdb::process& proc, virt_addr address,
       is_enabled_{false},
       mode_{mode},
       size_{size} {
+    if (size != 1 and size != 2 and size != 4 and size != 8) {
+        error::send("Watchponit size must be 1, 2, 4, or 8!");
+    }
+    if (mode == stoppoint_mode::execute and size != 1) {
+        error::send("Execute watchponits must have size 1!");
+    }
     if ((address.addr() & (size - 1)) != 0) {
         error::send("Watchpoint must be aligned to size!");
     }
@@ -51,6 +58,6 @@ void gsdb::watchpoint::disable() {
 void gsdb::watchpoint::update_data() {
     std::uint64_t new_data = 0;
     auto read = process_->read_memory(address_, size_);
-    memcpy(&new_data, read.data(), size_);
+    memcpy(&new_data, read.data(), std::min(size_, sizeof(new_data)));
     previous_data_ = std::exchange(data_, new_data);
 }
