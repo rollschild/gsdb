@@ -11,6 +11,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <libgsdb/target.hpp>
@@ -1023,7 +1024,7 @@ gsdb::target::resolve_indirect_name_result gsdb::target::resolve_indirect_name(
     std::string name, file_addr pc) const {
     auto op_pos = name.find_first_of(".-[(");
 
-    if (name[op_pos] == '(') {
+    if (op_pos != std::string::npos and name[op_pos] == '(') {
         // non-member function
         auto func_name = name.substr(0, op_pos);
         auto funcs = find_functions(func_name);
@@ -1048,7 +1049,7 @@ gsdb::target::resolve_indirect_name_result gsdb::target::resolve_indirect_name(
             op_pos = name.find_first_of(".-[(,", member_name_start);
             auto member_name =
                 name.substr(member_name_start, op_pos - member_name_start);
-            if (name[op_pos] == '(') {
+            if (op_pos != std::string::npos and name[op_pos] == '(') {
                 // member function
                 std::vector<die> funcs;
                 auto stripped_value_type =
@@ -1070,6 +1071,9 @@ gsdb::target::resolve_indirect_name_result gsdb::target::resolve_indirect_name(
             name = name.substr(member_name_start);
         } else if (name[op_pos] == '[') {
             auto int_end = name.find(']', op_pos);
+            if (int_end == std::string::npos) {
+                gsdb::error::send("Invalid []!");
+            }
             auto index_str = name.substr(op_pos + 1, int_end - op_pos - 1);
             auto index = to_integral<std::size_t>(index_str);
             if (!index) {
@@ -1077,8 +1081,11 @@ gsdb::target::resolve_indirect_name_result gsdb::target::resolve_indirect_name(
             }
             data = data.index(get_process(), *index);
             name = name.substr(int_end + 1);
+        } else {
+            gsdb::error::send(
+                std::format("Unexpected '{}' in variable name!", name[op_pos]));
         }
-        op_pos = name.find_first_of(".-[(,");
+        op_pos = name.find_first_of(".-[(");
     }
 
     return {std::move(data), {}};
