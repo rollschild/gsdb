@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -532,7 +533,11 @@ gsdb::file_addr gsdb::target::get_pc_file_address(
  * the current set of stack frames.
  */
 void gsdb::target::notify_stop(const gsdb::stop_reason& reason) {
-    threads_.at(reason.tid).frames.unwind();
+    try {
+        threads_.at(reason.tid).frames.unwind();
+    } catch (const std::exception&) {
+        return;
+    }
 }
 
 gsdb::stop_reason gsdb::target::step_in(std::optional<pid_t> otid) {

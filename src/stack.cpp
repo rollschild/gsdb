@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <exception>
 #include <iterator>
 #include <libgsdb/stack.hpp>
 #include <libgsdb/target.hpp>
@@ -96,11 +97,18 @@ void gsdb::stack::unwind() {
             create_base_frame(regs, inline_stack, file_pc, false);
         }
 
-        // after updating `frames_`, unwind another frame using the call frame
-        // information and update the program counter values that the loop uses
-        regs = dwarf.cfi().unwind(proc, file_pc, frames_.back().regs);
-        virt_pc =
-            virt_addr{regs.read_by_id_as<std::uint64_t>(register_id::rip) - 1};
+        try {
+            // after updating `frames_`, unwind another frame using the call
+            // frame information and update the program counter values that the
+            // loop uses
+            regs = dwarf.cfi().unwind(proc, file_pc, frames_.back().regs);
+            virt_pc = virt_addr{
+                regs.read_by_id_as<std::uint64_t>(register_id::rip) - 1};
+        } catch (const std::exception&) {
+            // no usable unwind info for this frame: keep the frames we already
+            // have
+            break;
+        }
         file_pc = virt_pc.to_file_addr(target_->get_elves());
         elf = file_pc.elf_file();
     }

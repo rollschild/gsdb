@@ -48,13 +48,16 @@ void exit_with_perror(gsdb::pipe& channel, std::string const& prefix) {
  * We can use `signal == (SIGTRAP | 0x80)` to check whether we're trapped by a
  * syscall.
  */
-void set_ptrace_options(pid_t pid) {
+void set_ptrace_options(pid_t pid, bool kill_on_tracer_exit) {
+    long options = PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACECLONE;
+    if (kill_on_tracer_exit) {
+        // if gsdb dies, the kernel kills the inferior instead of orphaning it
+        options |= PTRACE_O_EXITKILL;
+    }
     // PTRACE_O_TRACECLONE: kernel sends a SIGTRAP to any thread that spans a
     // new thread and sends a SIGSTOP to the new thread
-    if (ptrace(PTRACE_SETOPTIONS, pid, nullptr,
-               PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACECLONE) < 0) {
-        gsdb::error::send_errno(
-            "Failed to set TRACESYSGOOD and TRACECLONE options!");
+    if (ptrace(PTRACE_SETOPTIONS, pid, nullptr, options) < 0) {
+        gsdb::error::send_errno("Failed to set ptrace options!");
     }
 }
 
@@ -111,26 +114,71 @@ int find_free_stoppoint_register(std::uint64_t control_register) {
     }
     gsdb::error::send("No remaining hardware debug registers!");
 }
+
+/**
+ * Whether the thread is currently in a ptrace stop;
+ * 't' in /proc/<pid>/task/<tid>stat
+ */
+bool in_ptrace_stop(pid_t pid, pid_t tid) {
+    std::ifstream stat("/proc/" + std::to_string(pid) + "/task/" +
+                       std::to_string(tid) + "/stat");
+    std::string line;
+    std::getline(stat, line);
+    auto paren = line.rfind(')');
+    return paren != std::string::npos and paren + 2 < line.size() and
+           line[paren + 2] == 't';
+}
+
 }  // namespace
 
 gsdb::process::~process() {
-    if (pid_ != 0) {
-        int status;
-        if (is_attached_) {
-            if (state_ == process_state::running) {
-                kill(pid_, SIGSTOP);
-                waitpid(pid_, &status, 0);
-            }
+    if (pid_ == 0) return;
+    // Already exited and reaped: nothing to stop/kill, and PID may now belong
+    // to an unrelated process
+    if (state_ == process_state::exited or
+        state_ == process_state::terminated) {
+        return;
+    }
+    // Tear down without calling back into the target (it is being destroyed
+    // around us) or into CLI
+    target_ = nullptr;
+    thread_lifecycle_callback_ = nullptr;
 
+    if (terminate_on_end_) {
+        // SIGKILL wakes even ptrace-stopped threads
+        kill(pid_, SIGKILL);
+        // Reap every thread.
+        // Traced threads stay zombies until we wait for them, and the leader is
+        // reported only after all the others.
+        // launch() made the inferior its own process group (setpgid(0, 0))
+        int status;
+        while (waitpid(-pid_, &status, __WALL) > 0) {
+            // any threads of the inferior.
+            // once none are left, `waitpid` returns `-1` with `errno == ECHILD`
+            // `__WALL`: wait for all children, of both kinds
+        }
+        return;
+    }
+
+    if (is_attached_) {
+        try {
+            for (auto& [tid, thread] : threads_) {
+                if (!in_ptrace_stop(pid_, tid)) {
+                    tgkill(pid_, tid, SIGSTOP);
+                    waitpid(tid, nullptr, __WALL);
+                }
+            }
+            // remove the int3 bytes and debug registers
+            breakpoint_sites_.for_each([](auto& site) { site.disable(); });
+            watchpoints_.for_each([](auto& point) { point.disable(); });
+        } catch (...) {
+        }
+        for (auto& [tid, _] : threads_) {
             // for PTRACE_DETACH to work, the inferior must be stopped
             // thus the SIGSTOP above
-            ptrace(PTRACE_DETACH, pid_, nullptr, nullptr);
-            kill(pid_, SIGCONT);  // detached, then let it continue
+            ptrace(PTRACE_DETACH, tid, nullptr, nullptr);
         }
-        if (terminate_on_end_) {
-            kill(pid_, SIGKILL);
-            waitpid(pid_, &status, 0);  // wait for it to terminate
-        }
+        kill(pid_, SIGCONT);  // detached, then let it continue
     }
 }
 
@@ -388,7 +436,19 @@ gsdb::stop_reason gsdb::process::wait_on_signal(pid_t to_await) {
     }
     // initial stop reason
     stop_reason reason(tid, wait_status);
-    auto final_reason = handle_signal(reason, true);
+    std::optional<stop_reason> final_reason;
+    try {
+        final_reason = handle_signal(reason, true);
+    } catch (...) {
+        if (auto it = threads_.find(tid); it != threads_.end()) {
+            it->second.reason = reason;  // this thread _REALLY_ is stopped;
+            it->second.state = reason.reason;
+        }
+        stop_running_threads();
+        state_ = reason.reason;
+        current_thread_ = tid;
+        throw;
+    }
     if (!final_reason) {
         // resume the stopped thread, if `handle_signal` returns empty optional
         resume(tid);
@@ -497,7 +557,7 @@ std::unique_ptr<gsdb::process> gsdb::process::launch(
         proc->wait_on_signal();
         // extend the signal information that `ptrace` provides, so it becomes
         // much easier to distinguish `SIGTRAP` signals that come from syscalls
-        set_ptrace_options(proc->pid());
+        set_ptrace_options(proc->pid(), /*kill_on_tracer_exit=*/true);
     }
 
     return proc;
@@ -517,7 +577,7 @@ std::unique_ptr<gsdb::process> gsdb::process::attach(pid_t pid) {
         new process(pid, /*terminate_on_end=*/false, /*is_attached=*/true));
     proc->wait_on_signal();  // blocking, wait for the underlying process to
                              // halt
-    set_ptrace_options(proc->pid());
+    set_ptrace_options(proc->pid(), /*kill_on_tracer_exit=*/false);
 
     return proc;
 }
