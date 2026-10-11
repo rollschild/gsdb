@@ -1114,7 +1114,7 @@ gsdb::virt_addr gsdb::target::inferior_malloc(std::size_t size) {
 
     // use the entry point as the return address for calls
     auto entry_point = virt_addr{process_->get_auxv()[AT_ENTRY]};
-    breakpoints_.get_by_address(entry_point).install_hit_handler([&] {
+    breakpoints_.get_by_address(entry_point).install_hit_handler([] {
         return false;
     });
 
@@ -1144,7 +1144,7 @@ gsdb::target::evaluate_expression(std::string_view expr,
     }
 
     auto entry_point = virt_addr{process_->get_auxv()[AT_ENTRY]};
-    breakpoints_.get_by_address(entry_point).install_hit_handler([&] {
+    breakpoints_.get_by_address(entry_point).install_hit_handler([] {
         return false;
     });
 
