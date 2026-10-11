@@ -770,6 +770,7 @@ void execute_cfi_instruction(
                     elf.get_dwarf(),
                     {cur.position(), cur.position() + len},
                     true};
+                cur += len;  // skip the expression bytes
                 ctx.cfa_rule = cfa_expr_rule{expr};
                 break;
             }
@@ -819,6 +820,7 @@ void execute_cfi_instruction(
                     elf.get_dwarf(),
                     {cur.position(), cur.position() + len},
                     true};
+                cur += len;  // skip the expression bytes
                 ctx.register_rules.emplace(reg, val_expr_rule{expr});
                 break;
             }
@@ -829,6 +831,7 @@ void execute_cfi_instruction(
                     elf.get_dwarf(),
                     {cur.position(), cur.position() + len},
                     true};
+                cur += len;  // skip the expression bytes
                 ctx.register_rules.emplace(reg, expr_rule{expr});
                 break;
             }
