@@ -27,7 +27,7 @@ find_package(zydis CONFIG REQUIRED)
 
 ### 3. `src/CMakeLists.txt` — link Zydis to libgsdb
 
-Add a link line (as applied, it sits at `src/CMakeLists.txt:33`, right after the
+Add a link line (as applied, it sits at `src/CMakeLists.txt:34`, right after the
 `gsdb::libgsdb` alias and before `target_include_directories`):
 
 ```cmake

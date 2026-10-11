@@ -152,10 +152,10 @@ onto the implementation:
 
 | # | Plan | Implementation | Location |
 |---|---|---|---|
-| 1 | Set an internal breakpoint on the real entry point; the linker is initialized when it hits | `target::launch` creates an internal `address_breakpoint` at `auxv[AT_ENTRY]` with a hit handler | `src/target.cpp:74-83` |
-| 2 | Walk the loaded-library list in the rendezvous structure, parse each ELF, add to a collection in `target`; dump the vDSO to disk | `reload_dynamic_libraries()` + `dump_vdso()` | `src/target.cpp:416-465`, `src/target.cpp:46-63` |
-| 3 | Set an internal breakpoint on `_dl_debug_state`, whose address is in `r_brk` | `resolve_dynamic_linker_rendezvous()` tail | `src/target.cpp:376-387` |
-| 4 | On each `_dl_debug_state` hit with `r_state == RT_CONSISTENT`, reread `r_map`, adding new libs and unloading removed ones | Handler calls `reload_dynamic_libraries()` — **no `r_state` check, no unload path** (see [§15](#15-gaps-deviations-and-observations)) | `src/target.cpp:382-385` |
+| 1 | Set an internal breakpoint on the real entry point; the linker is initialized when it hits | `target::launch` creates an internal `address_breakpoint` at `auxv[AT_ENTRY]` with a hit handler | `src/target.cpp:498-507` |
+| 2 | Walk the loaded-library list in the rendezvous structure, parse each ELF, add to a collection in `target`; dump the vDSO to disk | `reload_dynamic_libraries()` + `dump_vdso()` | `src/target.cpp:863-912`, `src/target.cpp:62-79` |
+| 3 | Set an internal breakpoint on `_dl_debug_state`, whose address is in `r_brk` | `resolve_dynamic_linker_rendezvous()` tail | `src/target.cpp:823-834` |
+| 4 | On each `_dl_debug_state` hit with `r_state == RT_CONSISTENT`, reread `r_map`, adding new libs and unloading removed ones | Handler calls `reload_dynamic_libraries()` — **no `r_state` check, no unload path** (see [§15](#15-gaps-deviations-and-observations)) | `src/target.cpp:829-832` |
 
 ---
 
@@ -194,15 +194,15 @@ typedef struct {
 } Elf64_Dyn;                    /* sizeof == 16                           */
 ```
 
-`process::read_memory_as<T>()` (`process.hpp:182-186`) does the heavy lifting: it reads
+`process::read_memory_as<T>()` (`process.hpp:195-199`) does the heavy lifting: it reads
 `sizeof(T)` bytes out of the inferior and `memcpy`s them into a local `T` via
 `from_bytes<T>`. Because these are POD structs with a fixed x86-64 layout, the debugger's
 own copy of `struct r_debug` / `struct link_map` is a legitimate stand-in for the
 inferior's. Pointer fields come back as *inferior* pointers, which is why the code
 immediately launders them through `reinterpret_cast<std::uint64_t>` into `virt_addr`
-rather than ever dereferencing them (`src/target.cpp:423`, `430`).
+rather than ever dereferencing them (`src/target.cpp:870`, `877`).
 
-### 4.2 `elf_collection` — `include/libgsdb/elf.hpp:134-162`
+### 4.2 `elf_collection` — `include/libgsdb/elf.hpp:150-178`
 
 A deliberately minimal owning container. No id space, no map, no ordering: three linear
 searches and a `for_each`.
@@ -227,34 +227,39 @@ Why three different lookups exist:
 | `get_elf_by_path` | `reload_dynamic_libraries()` dedup for normal libraries | `l_name` is an absolute path, so it round-trips exactly |
 | `get_elf_by_filename` | `reload_dynamic_libraries()` dedup for the **vDSO only** | the vDSO's `l_name` is the bare string `"linux-vdso.so.1"`, but the `elf` we built for it lives at `/tmp/gsdb-XXXXXX/linux-vdso.so.1`, so path equality can never match — basename equality can |
 
-The `for_each` templates are defined in the header (`elf.hpp:151-162`) because they are
+The `for_each` templates are defined in the header (`elf.hpp:167-178`) because they are
 templates; both a mutable and a `const` overload exist so `const` methods like
 `target::find_functions()` and `target::get_line_entries_by_line()` can iterate.
 
-### 4.3 `target`'s new state — `include/libgsdb/target.hpp:120-129`
+### 4.3 `target`'s new state — `include/libgsdb/target.hpp:195-206`
 
 ```cpp
 std::unique_ptr<process> process_;
-stack                    stack_;
+// stack stack_;          // replaced by one stack per thread, in threads_
 stoppoint_collection<breakpoint> breakpoints_;
 virt_addr                dynamic_linker_rendezvous_address_;  // &r_debug, or 0
 elf_collection           elves_;                              // owns ALL ELF objects
 elf*                     main_elf_;                           // non-owning alias
+std::unordered_map<pid_t, thread> threads_;                   // per-thread state + stack
 ```
 
-The private constructor (`target.hpp:106-109`) is subtle:
+The private constructor (`target.hpp:177-184`) is subtle:
 
 ```cpp
 target(std::unique_ptr<process> proc, std::unique_ptr<elf> obj)
-    : process_(std::move(proc)), stack_(this), main_elf_(obj.get()) {
+    : process_(std::move(proc)), main_elf_(obj.get()) {
     elves_.push(std::move(obj));
+    [[maybe_unused]] auto pid = process_->pid();
+    for (auto& [tid, state] : process_->thread_states()) {
+        threads_.emplace(tid, thread(&state, stack{this, tid}));
+    }
 }
 ```
 
 `main_elf_` is captured from `obj.get()` in the *member-init list*, then the `unique_ptr`
 is moved into `elves_` in the *body*. Moving a `unique_ptr` does not move the pointee, so
 the raw alias stays valid — the main executable is simultaneously `elves_[0]` and
-`*main_elf_`. `get_elf()` was retargeted from `*elf_` to `*main_elf_` (`target.hpp:48-49`)
+`*main_elf_`. `get_elf()` was retargeted from `*elf_` to `*main_elf_` (`target.hpp:60-61`)
 so every existing caller kept working unchanged.
 
 **Design note on `elf*` stability:** `elf_collection` stores `unique_ptr<elf>`, so
@@ -295,7 +300,7 @@ The two entry points reach the same state by different routes, because a freshly
 process has *not* run the dynamic linker yet, whereas an already-running process has.
 
 ```
-┌──────────────────────── target::launch (src/target.cpp:66-85) ────────────────────────┐
+┌──────────────────────── target::launch (src/target.cpp:490-509) ──────────────────────┐
 │                                                                                       │
 │  process::launch(path, debug=true, stdout_replacement)                                │
 │      └─ fork → PTRACE_TRACEME → execlp → SIGTRAP → wait_on_signal()                   │
@@ -318,7 +323,7 @@ process has *not* run the dynamic linker yet, whereas an already-running process
 │  return tgt   ── rendezvous NOT yet resolved; happens on the first resume ──           │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────── target::attach (src/target.cpp:87-100) ────────────────────────┐
+┌──────────────────────── target::attach (src/target.cpp:511-524) ───────────────────────┐
 │                                                                                       │
 │  elf_path = /proc/<pid>/exe          (symlink to the real binary)                      │
 │  process::attach(pid)                (PTRACE_ATTACH → SIGSTOP → wait_on_signal)        │
@@ -340,7 +345,7 @@ behavior, demonstrated in [§14](#14-verified-behavior).
 
 ## 6. Phase 2 — `resolve_dynamic_linker_rendezvous()`
 
-`src/target.cpp:346-390`. Runs once (idempotent via the guard on line 348).
+`src/target.cpp:793-837`. Runs once (idempotent via the guard on line 348).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
@@ -416,7 +421,7 @@ a no-op nop-hook so that debuggers have somewhere to trap.
 
 ## 7. Phase 3 — `reload_dynamic_libraries()`
 
-`src/target.cpp:416-465`. This is the workhorse; it is called from Phase 2 once and from
+`src/target.cpp:863-912`. This is the workhorse; it is called from Phase 2 once and from
 the `_dl_debug_state` handler on every subsequent load.
 
 ```
@@ -515,7 +520,7 @@ so this is wasted work, not a bug. See [§15](#15-gaps-deviations-and-observatio
 The vDSO is a kernel-supplied ELF that exists **only in memory** — there is no file on
 disk to `mmap`. But every downstream consumer (`elf`'s constructor, `dwarf`, `file_addr`)
 is built around an mmap'd file. Rather than special-case the entire ELF layer,
-`dump_vdso()` (`src/target.cpp:46-63`) materializes it:
+`dump_vdso()` (`src/target.cpp:62-79`) materializes it:
 
 ```cpp
 char tmp_dir[] = "/tmp/gsdb-XXXXXX";
@@ -649,29 +654,38 @@ resolved and fired correctly, with a backtrace that crosses the ELF boundary.
 
 ## 9. The hit-handler mechanism inside `wait_on_signal()`
 
-`src/process.cpp:196-212`. This is the one change in `process` that the whole feature rests
-on, and it is worth reading closely.
+`src/process.cpp:325-338`. This is the one change in `process` that the whole feature rests
+on, and it is worth reading closely. With thread support the check moved out of
+`wait_on_signal()` into `process::handle_signal()`, which `wait_on_signal()` calls for each
+stop; `handle_signal()` returns `std::nullopt` to ask for an auto-restart, and
+`wait_on_signal()` does the restart (`src/process.cpp:452-456`).
 
 ```cpp
-auto instr_begin = get_pc() - 1;
+// handle_signal(reason, is_main_stop)
 if (reason.info == SIGTRAP) {
+    auto instr_begin = get_pc(tid) - 1;
     if (reason.trap_reason == trap_type::software_break and
         breakpoint_sites_.contains_address(instr_begin) and          // (A)
         breakpoint_sites_.get_by_address(instr_begin).is_enabled()) {
-        set_pc(instr_begin);                                         // (B)
+        set_pc(instr_begin, tid);                                    // (B)
 
         auto& bp = breakpoint_sites_.get_by_address(instr_begin);
         if (bp.parent_) {                                            // (C)
             bool should_restart = bp.parent_->notify_hit();
-            if (should_restart) {
-                resume();
-                return wait_on_signal();                             // (D)
+            if (should_restart and is_main_stop) {
+                return std::nullopt;                                 // (D)
             }
         }
     } else if (…hardware_break…) { … }
       else if (…syscall…)        { … }
 }
 if (target_) target_->notify_stop(reason);                           // (E)
+
+// wait_on_signal(to_await)
+if (!final_reason) {
+    resume(tid);
+    return wait_on_signal(to_await);                                 // (D)
+}
 ```
 
 **(A)** The predicate was rewritten from `enabled_stoppoint_at_address(instr_begin) and
@@ -751,7 +765,7 @@ to answer that question when starting from a raw runtime PC.
   virt_addr  (what ptrace gives you: 0x7ffff7fb60fd)
       │
       │  to_file_addr(const elf_collection&)      src/types.cpp:26-31    ← NEW
-      │      └─ elves.get_elf_containing_address(*this)   src/elf.cpp:274-283
+      │      └─ elves.get_elf_containing_address(*this)   src/elf.cpp:282-291
       │             └─ for each elf: elf->get_section_containing_address(virt_addr)
       │                                    src/elf.cpp:140-150
       │                       └─ addr >= bias + sh_addr && addr < bias + sh_addr + sh_size
@@ -778,15 +792,15 @@ Three call sites were switched from the single-ELF form to the collection form �
 three switches are what actually make shared-library debugging work:
 
 ```diff
-  // src/target.cpp:102-104
+  // src/target.cpp:526-529
 - return process_->get_pc().to_file_addr(*elf_);
 + return process_->get_pc().to_file_addr(elves_);
 
-  // src/target.cpp:318  (function_name_at_address)
+  // src/target.cpp:765  (function_name_at_address)
 - auto file_address = address.to_file_addr(*elf_);
 + auto file_address = address.to_file_addr(elves_);
 
-  // src/stack.cpp:104   (inside the unwind loop)
+  // src/stack.cpp:112   (inside the unwind loop)
 - file_pc = virt_pc.to_file_addr(target_->get_elf());
 + file_pc = virt_pc.to_file_addr(target_->get_elves());
 ```
@@ -799,7 +813,7 @@ to `step_in`/`step_over`/`step_out` were needed at all.
 
 ### The unwinder boundary condition
 
-`src/stack.cpp:79`:
+`src/stack.cpp:80`:
 
 ```diff
 - while (virt_pc.addr() != 0 and elf == &target_->get_elf()) {
@@ -832,7 +846,7 @@ to no tracked object, which is the real "we've run off the end" signal.
 Five functions had to learn about `elves_`. Note the shape they all share: an
 `elves_.for_each` that accumulates across objects, replacing a single-object query.
 
-### 11.1 `target::find_functions` — `src/target.cpp:276-294`
+### 11.1 `target::find_functions` — `src/target.cpp:723-741`
 
 ```diff
 - auto dwarf_found = elf_->get_dwarf().find_functions(name);
@@ -867,7 +881,7 @@ with *its own* object so `to_virt_addr()` applies *that library's* bias. Without
 the `elf*` through the result, every symbol would be biased by the main executable's load
 address.
 
-### 11.2 `target::get_line_entries_by_line` — `src/target.cpp:395-406` (new)
+### 11.2 `target::get_line_entries_by_line` — `src/target.cpp:842-853` (new)
 
 ```cpp
 std::vector<gsdb::line_table::iterator> gsdb::target::get_line_entries_by_line(
@@ -919,7 +933,7 @@ The body was already correct for shared libraries — the existing comment says 
 and prologue-skip logic, and `entry->address.to_virt_addr()` applies the *right* bias. The
 work in this commit was to feed that already-correct body from all objects instead of one.
 
-### 11.4 `target::function_name_at_address` — `src/target.cpp:316-344`
+### 11.4 `target::function_name_at_address` — `src/target.cpp:763-791`
 
 Now qualifies every name with the owning object:
 
@@ -952,13 +966,13 @@ The output format is `<basename>`<function>` — LLDB's convention:
 ```
 
 This is why the `[target]` stepping test assertions had to be updated from `"main"` to
-`"step`main"` (`test/tests.cpp:826, 834, 840, 856, 861`).
+`"step`main"` (`test/tests.cpp:828, 836, 842, 858, 863`).
 
 Two regressions hitched a ride here, both flagged in [§15](#15-gaps-deviations-and-observations):
 the `__cxa_demangle` call was commented out (so ELF-symbol names now surface **mangled**),
-and `elf_name` at `src/target.cpp:333` is now a dead local.
+and `elf_name` at `src/target.cpp:780` is now a dead local.
 
-### 11.5 `target`'s new public accessors — `include/libgsdb/target.hpp:97-103`
+### 11.5 `target`'s new public accessors — `include/libgsdb/target.hpp:126-132`
 
 ```cpp
 elf_collection&       get_elves()          { return elves_; }
@@ -967,7 +981,7 @@ elf&                  get_main_elf()       { return *main_elf_; }
 const elf&            get_main_elf() const { return *main_elf_; }
 ```
 
-`get_elves()` is consumed by `stack::unwind()` (`src/stack.cpp:104`). `get_main_elf()` is
+`get_elves()` is consumed by `stack::unwind()` (`src/stack.cpp:112`). `get_main_elf()` is
 currently a synonym for the pre-existing `get_elf()`, added for clarity at call sites that
 specifically mean "the executable, not some library". The CLI (`tools/gsdb.cpp`) does not
 reference either — it observes shared libraries purely through `function_name_at_address`
@@ -1211,8 +1225,8 @@ out of the library into the executable.
 ### 13.2 The circular dependency, and how it is broken
 
 ```
-   process ──── target_* ────► target        (process.hpp:242, set via set_target)
-   target  ──── process_ ────► process       (target.hpp:120, owns)
+   process ──── target_* ────► target        (process.hpp:311, set via set_target)
+   target  ──── process_ ────► process       (target.hpp:195, owns)
 
    breakpoint_site ── parent_ ──► breakpoint  (breakpoint_site.hpp:45)
    breakpoint ── breakpoint_sites_ ──► breakpoint_site  (NON-owning:
@@ -1269,7 +1283,7 @@ $ cd build && ctest
       Start 30: Shared library tracing works ..............   Passed    0.04 sec
 ```
 
-### The `[dynlib]` test — `test/tests.cpp:885-903`
+### The `[dynlib]` test — `test/tests.cpp:887-905`
 
 ```cpp
 TEST_CASE("Shared library tracing works", "[dynlib]") {
@@ -1310,7 +1324,7 @@ target_link_libraries(marshmallow PRIVATE meow)
 `SHARED` is what makes this a `.so` rather than an archive folded into the executable;
 `-fPIC` is what makes the library's code position-independent so a nonzero load bias is
 legal; `-gdwarf-4` matches the parser's hard version constraint. The DWARF reader throws on
-anything else (`src/dwarf.cpp:444-450`: *"Only DWARF32 is supported!"*, *"Only DWARF
+anything else (`src/dwarf.cpp:447-453`: *"Only DWARF32 is supported!"*, *"Only DWARF
 version 4 is supported!"*, *"Invalid address size for DWARF!"*) from `parse_compile_units`,
 which the `dwarf` constructor calls eagerly, which the `elf` constructor calls at
 `src/elf.cpp:60`. So **a library built with `-gdwarf-5` would make `new elf(path)` throw
@@ -1340,7 +1354,7 @@ Ordered by how much they matter.
 the `r_state` member of the rendezvous structure is `RT_CONSISTENT`**, reread `r_map`,
 adding any new shared libraries **and unloading any ones that were removed**."*
 
-Neither clause is implemented. `reload_dynamic_libraries()` (`src/target.cpp:416-465`)
+Neither clause is implemented. `reload_dynamic_libraries()` (`src/target.cpp:863-912`)
 reads `r_debug` but ignores `r_state`, and has no removal logic at all.
 
 Consequences:
@@ -1370,7 +1384,7 @@ Consequences:
 
 ### 15.2 `__cxa_demangle` was disabled in `function_name_at_address`
 
-`src/target.cpp:333-336`:
+`src/target.cpp:780-783`:
 
 ```cpp
 auto elf_name = std::string{obj->get_string(elf_func.value()->st_name)};   // now dead
@@ -1388,14 +1402,16 @@ The commented-out version also had a latent bug worth preserving in memory: it r
 malloc'd buffer, and would have returned `nullptr` (UB on `std::string` construction) for
 any name that failed to demangle — which is every plain C symbol. `elf::build_symbol_maps`
 (`src/elf.cpp:182-188`) shows the correct pattern: check `demangle_status == 0`, then
-`free()`.
+`free()`. (It is only correct since `fd6be79`: `symbol_name_map_` now keys on `std::string`,
+so the insert copies the name before `free()`. Before that the key was a `string_view` into
+the freed buffer; see bug-audit C1.)
 
 `elf_name` is now a dead local. It survives `-Wall -Wextra -Werror` only because
 `-Wunused-variable` does not fire for types with non-trivial destructors.
 
 ### 15.3 `bp.resolve()` is inside the link-map loop
 
-`src/target.cpp:463` sits inside the `while (entry_ptr != nullptr)` body. With 7 libraries
+`src/target.cpp:910` sits inside the `while (entry_ptr != nullptr)` body. With 7 libraries
 and *B* breakpoints, `resolve()` runs 7·*B* times per reload instead of *B*. Every
 `resolve()` override re-runs `find_functions` (which is `elves_.for_each` × DWARF index
 lookup) or `get_line_entries_by_line` (which is `elves_ × compile_units × line-table
@@ -1404,16 +1420,18 @@ scan`). So the cost is roughly `O(N_libs² × N_breakpoints × N_CUs)`. Moving t
 
 ### 15.4 `wait_on_signal` recurses instead of looping
 
-`src/process.cpp:209-210`: `resume(); return wait_on_signal();`. One stack frame per
+`src/process.cpp:454-455`: `resume(tid); return wait_on_signal(to_await);`. One stack frame per
 auto-restarted internal stop. Depth is 2 per `dlopen` in practice, but a plugin host that
 loads modules in a loop nests linearly. Note this predates the shared-library work —
-`maybe_resume_from_syscall` (`src/process.cpp:685-686`) does the same thing for filtered
-syscalls. Converting both to a `while (true)` around the body would bound the stack.
+filtered syscalls take the same path: `should_resume_from_syscall()`
+(`src/process.cpp:965`) makes `handle_signal()` return `std::nullopt`. Thread-exit stops
+recurse too (`return wait_on_signal(-1);`, `src/process.cpp:471`). Converting
+`wait_on_signal()` to a `while (true)` around the body would bound the stack.
 
 ### 15.5 `read_memory(name_addr, 4096)` over-reads
 
-`src/target.cpp:432` unconditionally requests 4096 bytes for a NUL-terminated path.
-`process::read_memory` (`src/process.cpp:452-463`) splits the request at page boundaries
+`src/target.cpp:879` unconditionally requests 4096 bytes for a NUL-terminated path.
+`process::read_memory` (`src/process.cpp:714-725`) splits the request at page boundaries
 into multiple remote `iovec`s, and `process_vm_readv` only returns `-1` if the *first*
 iovec fails — so a string near the end of a mapping yields a short read rather than an
 error. That makes this safe in practice but by accident, not by construction. A path
@@ -1460,7 +1478,7 @@ would matter for `step_over` across a long line.
 
 ### 15.8 `resolve_dynamic_linker_rendezvous` assumes `.dynamic` exists
 
-`src/target.cpp:350-353` calls `dynamic_section.value()` on the `std::optional` without
+`src/target.cpp:797-800` calls `dynamic_section.value()` on the `std::optional` without
 checking. Debugging a **statically linked** executable — which has no `.dynamic` section —
 throws `std::bad_optional_access` out of `target::launch`'s hit handler, i.e. out of
 `wait_on_signal`. An early `if (!dynamic_section) return;` would make static binaries work
@@ -1470,7 +1488,7 @@ so this fires on the first `continue` of *any* static binary.
 ### 15.9 The entry-point breakpoint is never removed
 
 After the rendezvous is resolved, the `int3` at `AT_ENTRY` stays patched forever, and its
-handler keeps firing (the idempotence guard at `src/target.cpp:348` makes it a no-op that
+handler keeps firing (the idempotence guard at `src/target.cpp:795` makes it a no-op that
 returns `true`). Costs one `int3` re-patch cycle on the vanishingly rare occasion that
 `AT_ENTRY` executes twice. Harmless, but a `breakpoints_.remove_by_id()` after first
 resolution would be tidier.
@@ -1478,10 +1496,10 @@ resolution would be tidier.
 ### 15.10 Handler lambda capture styles differ
 
 ```cpp
-// src/target.cpp:77  — explicit capture of a raw pointer
+// src/target.cpp:501 — explicit capture of a raw pointer
 entry_bp.install_hit_handler([target = tgt.get()] { … });
 
-// src/target.cpp:382 — implicit capture of `this` by reference
+// src/target.cpp:829 — implicit capture of `this` by reference
 debug_state_bp.install_hit_handler([&] { reload_dynamic_libraries(); return true; });
 ```
 
@@ -1498,34 +1516,34 @@ reference", which would be a dangling-capture bug if the lambda ever touched
 
 | File | Lines | What |
 |---|---|---|
-| `include/libgsdb/elf.hpp` | 134-162 | **new** `elf_collection` + `for_each` templates |
+| `include/libgsdb/elf.hpp` | 150-178 | **new** `elf_collection` + `for_each` templates |
 | `include/libgsdb/target.hpp` | 5 | `#include <link.h>` |
-| | 48-49 | `get_elf()` retargeted to `*main_elf_` |
-| | 95 | `read_dynamic_linker_rendezvous()` decl |
-| | 97-103 | `get_elves()`, `get_main_elf()`, `get_line_entries_by_line()` |
-| | 106-109 | ctor: `main_elf_ = obj.get()` then `elves_.push(move(obj))` |
-| | 117-118 | `resolve_dynamic_linker_rendezvous()`, `reload_dynamic_libraries()` |
-| | 126-129 | `dynamic_linker_rendezvous_address_`, `elves_`, `main_elf_` |
+| | 60-61 | `get_elf()` retargeted to `*main_elf_` |
+| | 124 | `read_dynamic_linker_rendezvous()` decl |
+| | 126-132 | `get_elves()`, `get_main_elf()`, `get_line_entries_by_line()` |
+| | 177-184 | ctor: `main_elf_ = obj.get()` then `elves_.push(move(obj))` |
+| | 192-193 | `resolve_dynamic_linker_rendezvous()`, `reload_dynamic_libraries()` |
+| | 201-204 | `dynamic_linker_rendezvous_address_`, `elves_`, `main_elf_` |
 | `include/libgsdb/types.hpp` | 18, 53 | fwd-declare `elf_collection`; `to_file_addr(const elf_collection&)` |
 | `include/libgsdb/breakpoint.hpp` | 7, 68-81, 99 | `<functional>`, `install_hit_handler`, `notify_hit`, `on_hit_` |
-| `src/target.cpp` | 46-63 | **new** `dump_vdso()` |
-| | 74-83 | entry-point internal breakpoint + handler in `launch()` |
-| | 98 | direct `resolve_dynamic_linker_rendezvous()` in `attach()` |
-| | 102-104 | `get_pc_file_address` → `to_file_addr(elves_)` |
-| | 276-294 | `find_functions` → `elves_.for_each` |
-| | 316-344 | `function_name_at_address` → `elf`func` format |
-| | 346-390 | **new** `resolve_dynamic_linker_rendezvous()` |
-| | 395-406 | **new** `get_line_entries_by_line()` |
-| | 408-414 | **new** `read_dynamic_linker_rendezvous()` |
-| | 416-465 | **new** `reload_dynamic_libraries()` |
-| `src/elf.cpp` | 274-301 | `elf_collection` lookups |
+| `src/target.cpp` | 62-79 | **new** `dump_vdso()` |
+| | 498-507 | entry-point internal breakpoint + handler in `launch()` |
+| | 522 | direct `resolve_dynamic_linker_rendezvous()` in `attach()` |
+| | 526-529 | `get_pc_file_address` → `to_file_addr(elves_)` |
+| | 723-741 | `find_functions` → `elves_.for_each` |
+| | 763-791 | `function_name_at_address` → `elf`func` format |
+| | 793-837 | **new** `resolve_dynamic_linker_rendezvous()` |
+| | 842-853 | **new** `get_line_entries_by_line()` |
+| | 855-861 | **new** `read_dynamic_linker_rendezvous()` |
+| | 863-912 | **new** `reload_dynamic_libraries()` |
+| `src/elf.cpp` | 282-309 | `elf_collection` lookups |
 | `src/types.cpp` | 26-31 | `to_file_addr(const elf_collection&)` |
-| `src/process.cpp` | 196-212 | `contains_address` + `parent_->notify_hit()` + auto-restart |
+| `src/process.cpp` | 325-338, 452-456 | `contains_address` + `parent_->notify_hit()` (now in `handle_signal()`) + auto-restart in `wait_on_signal()` |
 | `src/breakpoint.cpp` | 93-125 | `line_breakpoint::resolve` de-nested onto `get_line_entries_by_line` |
-| `src/stack.cpp` | 79 | `while (… and elf)` — no longer stops at the main-ELF boundary |
-| | 104 | `to_file_addr(target_->get_elves())` |
-| `test/tests.cpp` | 826-861 | stepping assertions updated to `step`main` etc. |
-| | 885-903 | **new** `[dynlib]` test case |
+| `src/stack.cpp` | 80 | `while (… and elf)` — no longer stops at the main-ELF boundary |
+| | 112 | `to_file_addr(target_->get_elves())` |
+| `test/tests.cpp` | 828-863 | stepping assertions updated to `step`main` etc. |
+| | 887-905 | **new** `[dynlib]` test case |
 | `test/targets/CMakeLists.txt` | — | `marshmallow` target, `meow` SHARED lib, `-fPIC`, link |
 | `test/targets/marshmallow.cpp` | — | **new** executable that calls into the library |
 | `test/targets/libmeow.cpp` | — | **new** shared library that reads a symbol from the executable |
@@ -1535,7 +1553,7 @@ reference", which would be a dangling-capture bug if the lambda ever touched
 | Tag | Value | Meaning | Read by gsdb? |
 |---|---|---|---|
 | `DT_NEEDED` | 1 | name of a required library | no — the linker handles it |
-| `DT_DEBUG` | **21 (0x15)** | **runtime-written `&r_debug`** | **yes** — `src/target.cpp:370` |
+| `DT_DEBUG` | **21 (0x15)** | **runtime-written `&r_debug`** | **yes** — `src/target.cpp:817` |
 | `DT_PLTGOT` | 3 | GOT/PLT address | no |
 | `DT_FLAGS` | 30 | e.g. `BIND_NOW` | no |
 

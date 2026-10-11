@@ -1,6 +1,6 @@
 # SysV Eightbyte Classification — Why Field Classes Are Merged
 
-> Explains the merge step in `classify_class_field()` (`src/type.cpp:205-215`):
+> Explains the merge step in `classify_class_field()` (`src/type.cpp:234-244`):
 > why the System V x86-64 ABI classifies aggregates per *eightbyte* rather than
 > per field, what `merge_parameter_classes` does, what the two elements of
 > `get_parameter_classes()`'s result mean, and why gsdb has to get this exactly
@@ -127,7 +127,7 @@ goes in a general-purpose register.
 
 ## What `field_classes[0]` and `field_classes[1]` mean
 
-`field_type.get_parameter_classes()` (`src/type.cpp:504`) returns the same
+`field_type.get_parameter_classes()` (`src/type.cpp:586`) returns the same
 `std::array<parameter_class, 2>` shape as `classes`, but for the **field's own
 type**, counted from the start of the field:
 

@@ -1,6 +1,10 @@
 # `target::step_over()` — Explained
 
-Source: `src/target.cpp:166-208`
+Source: `src/target.cpp:640-689`
+
+Every helper takes the thread id `tid` (the current thread unless the caller
+passes one), and each exit path records the stop reason on that thread's state
+(`thread.state->reason = reason`).
 
 ## What it is supposed to do
 
@@ -38,7 +42,7 @@ PC currently sits:
    in one shot           at the return addr
 ```
 
-### (A) Inlined frame — `target.cpp:174-185`
+### (A) Inlined frame — `target.cpp:650-662`
 
 ```cpp
 auto inline_stack = stack.inline_stack_at_pc();
@@ -47,7 +51,7 @@ if (at_start_of_inline_frame) {
     auto frame_to_skip =
         inline_stack[inline_stack.size() - stack.inline_height()];
     auto return_address = frame_to_skip.high_pc().to_virt_addr();
-    reason = run_until_address(return_address);
+    reason = run_until_address(return_address, tid);
     ...
 }
 ```
@@ -76,13 +80,14 @@ inlined body in a single `run_until_address`.
    skip target = frame_to_skip.high_pc()  ──►  one past the inlined body
 ```
 
-### (B) Real `call` instruction — `target.cpp:186-193`
+### (B) Real `call` instruction — `target.cpp:663-672`
 
 ```cpp
-} else if (auto instructions = disas.disassemble(2, process_->get_pc());
+} else if (auto instructions =
+               disas.disassemble(2, process_->get_pc(tid));
            /* instructions[0].text.rfind("call") == 0*/ instructions[0]
                .text.starts_with("call")) {
-    reason = run_until_address(instructions[1].address);
+    reason = run_until_address(instructions[1].address, tid);
     ...
 }
 ```
@@ -94,7 +99,7 @@ Disassemble **2** instructions starting at the PC:
 - `instructions[1]` — the very next instruction, i.e. the **return address**.
 
 If the current instruction is a `call`, we don't single-step into the callee.
-Instead `run_until_address(instructions[1].address)` plants a temporary
+Instead `run_until_address(instructions[1].address, tid)` plants a temporary
 breakpoint at the return address, resumes at full speed, and stops once the
 callee returns — stepping *over* it.
 
@@ -106,12 +111,13 @@ callee returns — stepping *over* it.
                   └─ run_until_address(─┘  ← run callee, stop here
 ```
 
-### (C) Ordinary instruction — `target.cpp:194-199`
+### (C) Ordinary instruction — `target.cpp:673-679`
 
 ```cpp
 } else {
-    reason = process_->step_instruction();
+    reason = process_->step_instruction(tid);
     if (!reason.is_step()) {
+        thread.state->reason = reason;
         return reason;
     }
 }
@@ -121,7 +127,7 @@ Not a call, not an inline entry → just single-step one machine instruction.
 
 ---
 
-## `run_until_address()` — the "step over" primitive (`target.cpp:143-164`)
+## `run_until_address()` — the "step over" primitive (`target.cpp:614-638`)
 
 Both branch (A) and branch (B) lean on this helper:
 
@@ -153,7 +159,8 @@ breakpoint out of the user's `breakpoint list`. Re-labelling the stop reason as
 After branch (A) or (B), the code guards:
 
 ```cpp
-if (!reason.is_step() or process_->get_pc() != return_address) {
+if (!reason.is_step() or process_->get_pc(tid) != return_address) {
+    thread.state->reason = reason;
     return reason;
 }
 ```
@@ -165,12 +172,12 @@ yield control to the user if something more interesting happened mid-call.
 
 ---
 
-## The loop condition — `target.cpp:200-205`
+## The loop condition — `target.cpp:680-685`
 
 ```cpp
-} while ((line_entry_at_pc() == orig_line or
-          line_entry_at_pc()->end_sequence) and
-         line_entry_at_pc() != line_table::iterator{});
+} while ((line_entry_at_pc(tid) == orig_line or
+          line_entry_at_pc(tid)->end_sequence) and
+         line_entry_at_pc(tid) != line_table::iterator{});
 ```
 
 Keep looping while **all** of:
@@ -189,7 +196,7 @@ real, non-end-sequence line entry**.
              keep going        keep going        keep going          STOP, return
 ```
 
-`line_entry_at_pc()` (`target.cpp:131-141`) maps the current PC (as a
+`line_entry_at_pc()` (`target.cpp:601-612`) maps the current PC (as a
 **file address**, bias-adjusted) to a line-table row inside the correct compile
 unit. It returns a default/empty iterator when there's no line info — which is
 the third condition's escape hatch.

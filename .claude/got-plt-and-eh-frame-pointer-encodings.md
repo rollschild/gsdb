@@ -1,6 +1,6 @@
 # `.got.plt`, the GOT/PLT machinery, and why `dwarf.cpp` needs its address
 
-Reference doc for `src/dwarf.cpp:673-676`:
+Reference doc for `src/dwarf.cpp:693-696`:
 
 ```cpp
 auto text_section_start = *elf.get_section_start_address(".text");
@@ -240,7 +240,7 @@ described by a one-byte **encoding**. That byte splits into three parts:
 ```
 
 **Value format (low nibble)** — how many bytes to read and how to interpret them.
-Handled by `parse_eh_frame_pointer_with_base()` at `src/dwarf.cpp:201`:
+Handled by `parse_eh_frame_pointer_with_base()` at `src/dwarf.cpp:204`:
 
 | Constant | Value | Reads |
 |---|---|---|
@@ -251,7 +251,7 @@ Handled by `parse_eh_frame_pointer_with_base()` at `src/dwarf.cpp:201`:
 | `DW_EH_PE_sdata2/4/8` | `0x0a/0b/0c` | 2 / 4 / 8 bytes **signed** |
 
 **Base (bits 6–4)** — what the decoded value is added to. Handled by
-`parse_eh_frame_pointer()` at `src/dwarf.cpp:230`:
+`parse_eh_frame_pointer()` at `src/dwarf.cpp:233`:
 
 | Constant | Value | Base is | Parameter in our code |
 |---|---|---|---|
@@ -264,7 +264,7 @@ Handled by `parse_eh_frame_pointer_with_base()` at `src/dwarf.cpp:201`:
 
 **Indirect (`0x80`)** — the decoded result is the address of a slot that *contains*
 the real pointer; you must dereference once more. Deliberately skipped by our code,
-hence the `encoding & 0x70` mask at `src/dwarf.cpp:239` and the comment above it.
+hence the `encoding & 0x70` mask at `src/dwarf.cpp:242` and the comment above it.
 
 So `sdata4|pcrel` (`0x1b`) means: read 4 bytes as a signed int, add the file address
 of those 4 bytes. That's the overwhelmingly common encoding, and it's what the
@@ -322,7 +322,7 @@ Decode the first entry by hand:
 If we had used the GOT (`0x3fb8`) as the base here we'd have gotten `0x2fc4` —
 garbage, pointing into `.dynamic`-ish data, not code.
 
-Our implementation gets this right at `src/dwarf.cpp:1592-1596`, inside
+Our implementation gets this right at `src/dwarf.cpp:1729-1733`, inside
 `eh_hdr::operator[]`:
 
 ```cpp
@@ -341,13 +341,13 @@ things, and both are correct:
 
 | Call site | `data_section_start` argument | Meaning |
 |---|---|---|
-| `eh_hdr::operator[]` (`dwarf.cpp:1593`) | start of `.eh_frame_hdr` | LSB spec rule for the search table |
-| `parse_fde` (`dwarf.cpp:347`) | `0` | FDE `initial_location` never uses `datarel` in practice |
-| `execute_cfi_instruction` (`dwarf.cpp:675`) | start of `.got.plt` | AMD64 psABI GOT base |
+| `eh_hdr::operator[]` (`dwarf.cpp:1730`) | start of `.eh_frame_hdr` | LSB spec rule for the search table |
+| `parse_fde` (`dwarf.cpp:350`) | `0` | FDE `initial_location` never uses `datarel` in practice |
+| `execute_cfi_instruction` (`dwarf.cpp:695`) | start of `.got.plt` | AMD64 psABI GOT base |
 
 ## 2.4 Where `execute_cfi_instruction` uses it
 
-`execute_cfi_instruction` (`src/dwarf.cpp:666`) is now fully implemented, and the
+`execute_cfi_instruction` (`src/dwarf.cpp:686`) is now fully implemented, and the
 consumer of these two locals is the `DW_CFA_set_loc` opcode.
 
 Most CFI location advances are relative and tiny: `DW_CFA_advance_loc` (delta packed
@@ -362,8 +362,8 @@ see them in the real `hello_gsdb` unwind tables:
 
 `DW_CFA_set_loc` is the exception: instead of a delta it carries an **absolute
 address, encoded with the FDE's pointer encoding** (the one from the CIE's `'R'`
-augmentation, parsed at `dwarf.cpp:302-303` into `cie.fde_pointer_encoding`). The
-implementation (`src/dwarf.cpp:707-715`):
+augmentation, parsed at `dwarf.cpp:305-306` into `cie.fde_pointer_encoding`). The
+implementation (`src/dwarf.cpp:727-736`):
 
 ```cpp
 case DW_CFA_set_loc: {
@@ -401,7 +401,7 @@ where the true GOT base is `0x3fb8`. It doesn't currently bite because GCC on x8
 emits `pcrel` (`0x1b`) for FDE pointers and reserves `datarel` for the
 `.eh_frame_hdr` table — which, per §2.3, uses a *different* base anyway. A
 `datarel`-encoded `DW_CFA_set_loc` is exotic. Note that `execute_cfi_instruction`
-*does* now consume `plt_start` (`src/dwarf.cpp:712`), so the only thing standing
+*does* now consume `plt_start` (`src/dwarf.cpp:732`), so the only thing standing
 between this approximation and a wrong answer is the encoding choice.
 
 If you ever want it airtight, the robust lookup is: prefer the
@@ -424,7 +424,7 @@ comment saying so, at most.
 
 ## 3.2 `eh_frame_pointer_encoding_size()` masks `0x7`, not `0x0f`
 
-At `src/dwarf.cpp:388`:
+At `src/dwarf.cpp:391`:
 
 ```cpp
 switch (encoding & 0x7) {

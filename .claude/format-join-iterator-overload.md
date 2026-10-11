@@ -8,7 +8,7 @@
 
 Add an iterator-based overload and refactor the existing range overload to delegate to it.
 
-### New iterator-based overload (applied at `tools/gsdb.cpp:180`, before the range overload)
+### New iterator-based overload (applied at `tools/gsdb.cpp:196`, before the range overload)
 
 The applied version also takes a `byte_fmt` format-spec parameter (so callers such
 as the `memory read` handler can ask for `"{:02x}"`), which means it formats via
@@ -37,7 +37,7 @@ std::string format_join(It first, S last, std::string_view separator,
 }
 ```
 
-### Simplified range overload (applied at `tools/gsdb.cpp:206-223`; the old body is kept commented out)
+### Simplified range overload (applied at `tools/gsdb.cpp:222-239`; the old body is kept commented out)
 
 ```cpp
 template <std::ranges::range T>

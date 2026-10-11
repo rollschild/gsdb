@@ -1,6 +1,6 @@
 # Why `offset >> 1`? — Register Offset Canonicalization
 
-> **Subject:** `src/registers.cpp:133-145` — `registers::undefine()` / `registers::is_undefined()`
+> **Subject:** `src/registers.cpp:134-146` — `registers::undefine()` / `registers::is_undefined()`
 >
 > ```cpp
 > // shift the register offset 1 bit to the right so that registers at a byte
@@ -355,13 +355,13 @@ would *separate* the aliases instead of unifying them, and no amount of `>> 1` w
 ## 4. The problem: what `undefined_` needs
 
 ```cpp
-std::vector<std::size_t> undefined_;   // include/libgsdb/registers.hpp:60
+std::vector<std::size_t> undefined_;   // include/libgsdb/registers.hpp:61
 ```
 
 DWARF call-frame information can declare that a register has **no recoverable value** in a given
 frame — the `DW_CFA_undefined` rule (`detail/dwarf.h:529`, modeled as `undefined_rule` in
-`src/dwarf.cpp:636`). When the unwinder reconstructs a caller's frame it calls `undefine(id)`
-(`src/dwarf.cpp:828`), and
+`src/dwarf.cpp:639`). When the unwinder reconstructs a caller's frame it calls `undefine(id)`
+(`src/dwarf.cpp:894`), and
 any later `read()` of that register throws (`src/registers.cpp:47-49`).
 
 The design question is **what to key that set on.**
@@ -529,8 +529,8 @@ non-issue; it would only matter if one `registers` instance were reused across m
 
 ### The comment's `` `hl` `` is a slip (half-fixed)
 
-`src/registers.cpp:141`, in `is_undefined()`, still says *"registers at a byte offset like `hl`"*.
+`src/registers.cpp:142`, in `is_undefined()`, still says *"registers at a byte offset like `hl`"*.
 There is no `hl` register on x86-64 (that's a Z80/8080 register pair). The case actually handled is
 the **high-byte** family — `%ah`, `%bh`, `%ch`, `%dh` — since the `l` variants already share the
-parent's offset and need no fixing. The twin comment in `undefine()` (`src/registers.cpp:135`) has
+parent's offset and need no fixing. The twin comment in `undefine()` (`src/registers.cpp:136`) has
 since been corrected to say `ah`; only the `is_undefined()` copy still carries the typo.

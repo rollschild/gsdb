@@ -1,6 +1,6 @@
 # Stack Unwinding in gsdb — `gsdb::stack::unwind()`
 
-Deep dive into `src/stack.cpp:57-106`, the routine that rebuilds the debugger's
+Deep dive into `src/stack.cpp:58-115`, the routine that rebuilds the debugger's
 view of the call stack every time the inferior halts.
 
 All assembly in this document is **AT&T syntax** (`mnemonic src, dst`).
@@ -27,7 +27,7 @@ Two independent reconstructions are interleaved in `unwind()`:
 frames_[0]  innermost (possibly an inlined body)
 frames_[1]
    ...
-frames_[N]  outermost frame still inside the main ELF object
+frames_[N]  outermost frame the unwinder could reach
 ```
 
 ---
@@ -39,10 +39,10 @@ the rest obvious.
 
 | Local | Meaning | Updated at |
 | --- | --- | --- |
-| `regs` | Register set **of the frame currently being built**. Starts as a *copy* of the live hardware registers (`get_registers()` returns a reference; `auto` copies it). | line 100 |
-| `virt_pc` | Runtime PC used for the loop's termination test. After the first iteration it is `return_address - 1`. | line 101 |
-| `file_pc` | `virt_pc` translated into a file address (load bias removed) — the key for every DWARF lookup. | line 103 |
-| `elf` | The ELF object `file_pc` belongs to; `nullptr` once the PC leaves the main executable. | line 104 |
+| `regs` | Register set **of the frame currently being built**. Starts as a *copy* of the live hardware registers (`get_registers()` returns a reference; `auto` copies it). | line 104 |
+| `virt_pc` | Runtime PC used for the loop's termination test. After the first iteration it is `return_address - 1`. | line 105 |
+| `file_pc` | `virt_pc` translated into a file address (load bias removed) — the key for every DWARF lookup. | line 112 |
+| `elf` | The ELF object `file_pc` belongs to; `nullptr` once the PC is outside every loaded ELF object. | line 113 |
 
 `registers` is a value type here, so each `stack_frame` owns an independent
 snapshot. That is what makes `stack::up()` / `down()` + `regs()` work: selecting
@@ -74,7 +74,7 @@ frame *N* means reading frame *N*'s saved register copy.
             └───────┬────────┘
                     │ yes
     ╔═══════════════▼═══════════════════════════════════════════╗
-    ║  while (virt_pc != 0 && elf == &target_->get_elf())        ║
+    ║  while (virt_pc != 0 && elf)                               ║
     ╠════════════════════════════════════════════════════════════╣
     ║                                                            ║
     ║   inline_stack = dwarf.inline_stack_at_address(file_pc)    ║
@@ -94,7 +94,8 @@ frame *N* means reading frame *N*'s saved register copy.
     ║   regs = dwarf.cfi().unwind(proc, file_pc,                 ║
     ║                             frames_.back().regs)  ◄── CFI  ║
     ║   virt_pc = virt_addr{ regs.rip - 1 }                      ║
-    ║   file_pc = virt_pc.to_file_addr(main elf)                 ║
+    ║   (either step throws → break, keeping frames so far)      ║
+    ║   file_pc = virt_pc.to_file_addr(all elves)                ║
     ║   elf     = file_pc.elf_file()                             ║
     ║                    │                                       ║
     ╚════════════════════╪═══════════════════════════════════════╝
@@ -130,7 +131,7 @@ The machine stack has **two** frames. The debugger should show **four**.
    ├──────────────────────────┤
    │ main's frame             │  ◄────────► frames_[3]  main  (inlined=false)
    ├──────────────────────────┤
-   │ __libc_start_call_main   │             (different ELF → loop stops)
+   │ __libc_start_call_main   │             (libc: no DWARF → loop stops)
    └──────────────────────────┘
 ```
 
@@ -139,7 +140,7 @@ Iteration 2 handles `main`'s physical frame and emits `frames_[3]`.
 
 ### 4.1 `inline_stack_at_address()` ordering
 
-`dwarf::inline_stack_at_address()` (`src/dwarf.cpp:1525`) starts from the
+`dwarf::inline_stack_at_address()` (`src/dwarf.cpp:1662`) starts from the
 concrete `DW_TAG_subprogram` containing the address, then repeatedly descends
 into whichever `DW_TAG_inlined_subroutine` child also contains the address:
 
@@ -154,13 +155,13 @@ So the vector is **outermost → innermost**, the opposite order of `frames_`.
 That is why both `create_base_frame` and `create_inline_stack_frames` walk it
 with reverse iterators.
 
-### 4.2 `create_base_frame` (`src/stack.cpp:111`)
+### 4.2 `create_base_frame` (`src/stack.cpp:120`)
 
 Emits the innermost logical frame. Note that the function names none of the
-`stack_frame` fields: the `push_back` at `src/stack.cpp:123-125` is a **braced
+`stack_frame` fields: the `push_back` at `src/stack.cpp:133-135` is a **braced
 aggregate initializer with no designated initializers**, so each value lands in
 a member purely by position. The field names below come from the `stack_frame`
-definition at `include/libgsdb/stack.hpp:15-21`:
+definition at `include/libgsdb/stack.hpp:17-23`:
 
 ```
   frames_.push_back({ regs , backtrace_pc            , inline_stack.back() , inlined , source_location{...} });
@@ -178,7 +179,7 @@ Field by field:
 
 - `regs` = the frame's register snapshot.
 - **`backtrace_report_address`** — held by the local `backtrace_pc`
-  (`src/stack.cpp:114`). Its value is the start address of the *line table
+  (`src/stack.cpp:123`). Its value is the start address of the *line table
   entry* covering `pc`, not `pc` itself. For a caller frame `pc` is already
   `ra - 1` (§6), so this snaps the report back to the beginning of the source
   line containing the `call`.
@@ -187,19 +188,19 @@ Field by field:
 - `inlined = (inline_stack.size() > 1)`.
 - `location` = the file/line of that same line table entry.
 
-#### 4.2.1 The line-table lookup (`src/stack.cpp:114-121`)
+#### 4.2.1 The line-table lookup (`src/stack.cpp:123-130`)
 
 ```cpp
-auto backtrace_pc = pc.to_virt_addr();                                  // 114
-// Find the start of the call instruction, ...                         // 115-117
-auto line_entry = pc.elf_file()->get_dwarf().line_entry_at_address(pc); // 118
-if (line_entry != line_table::iterator{}) {                             // 119
-    backtrace_pc = line_entry->address.to_virt_addr();                  // 120
-}                                                                       // 121
+auto backtrace_pc = pc.to_virt_addr();                                  // 123
+// Find the start of the call instruction, ...                         // 124-126
+auto line_entry = pc.elf_file()->get_dwarf().line_entry_at_address(pc); // 127
+if (line_entry != line_table::iterator{}) {                             // 128
+    backtrace_pc = line_entry->address.to_virt_addr();                  // 129
+}                                                                       // 130
 ```
 
-Four lines deciding **which address this frame reports**. Line 114 seeds it with
-the raw `pc`; 118–121 try to replace that with something better and fall back to
+Four lines deciding **which address this frame reports**. Line 123 seeds it with
+the raw `pc`; 127–130 try to replace that with something better and fall back to
 the raw value if they can't.
 
 **The problem being solved.** For every frame except the innermost, the `pc`
@@ -240,7 +241,7 @@ each loses:
 | Report the function's `low_pc` | Every frame in a function collapses to one address — the call site, the only interesting part, is lost |
 | Disassemble backward to find the `call` | x86-64 is variable-length, so backward decode is a heuristic, not a decision; it drags the disassembler into the stack layer, and still yields no file/line |
 
-The real argument is the one visible at line 125: **the line entry has to be
+The real argument is the one visible at line 135: **the line entry has to be
 fetched anyway.** `source_location{line_entry->file_entry, line_entry->line}` is
 the frame's file/line, and there is no way to get it except from the line table.
 Once you hold that row, its `address` field is free — and taking both from the
@@ -249,25 +250,25 @@ the address by disassembly and the line from the table and they can drift apart;
 take both from one row and they cannot.
 
 **How the lookup works.** `dwarf::line_entry_at_address`
-(`include/libgsdb/dwarf.hpp:370-374`) finds the CU containing the address, then
-calls `line_table::get_entry_by_address` (`src/dwarf.cpp:1467-1483`), which
+(`include/libgsdb/dwarf.hpp:467-471`) finds the CU containing the address, then
+calls `line_table::get_entry_by_address` (`src/dwarf.cpp:1604-1620`), which
 walks the rows looking for the pair where `prev->address <= address <
 it->address` and `prev` is not an `end_sequence` marker. So it returns the row
 whose address range *covers* the pc — a containment query, not an exact match,
 which is exactly right for a pc pointing into the middle of a row's code.
 
 **The `!= line_table::iterator{}` guard.** The lookup can fail two ways: no CU
-contains the address (`dwarf.hpp:372` returns `{}`), or the walk falls off the
-end (`src/dwarf.cpp:1482` returns `end()`). `line_table::end()` is literally
-`return {}` (`src/dwarf.cpp:1341`), and `operator==` compares only `pos_`
-(`dwarf.hpp:309`), which value-initialization zeroes to `nullptr`. So
+contains the address (`dwarf.hpp:469` returns `{}`), or the walk falls off the
+end (`src/dwarf.cpp:1619` returns `end()`). `line_table::end()` is literally
+`return {}` (`src/dwarf.cpp:1478`), and `operator==` compares only `pos_`
+(`dwarf.hpp:406`), which value-initialization zeroes to `nullptr`. So
 `line_entry != line_table::iterator{}` is a comparison against `end()` written
 longhand — "did the lookup find a row?" On failure `backtrace_pc` keeps the raw
-`pc` from line 114, which is degraded but not wrong.
+`pc` from line 123, which is degraded but not wrong.
 
 Two caveats on this block:
 
-- **The comment at 115–117 overstates what is computed.** It says "the start of
+- **The comment at 124–126 overstates what is computed.** It says "the start of
   the call instruction", but `line_entry->address` is the start of the *row*,
   which is `<=` the call's address. In the diagram above the row starts at
   `0x1165` (`movl $21, %edi`, setting up the argument), five bytes before the
@@ -275,11 +276,11 @@ Two caveats on this block:
   argument setup or a compound expression — `foo(bar(x), baz(y))` — the row
   starts well before the call being reported. "Start of the code for this source
   line" is the accurate description.
-- **The guard does not protect line 125.** `line_entry` is dereferenced
+- **The guard does not protect line 135.** `line_entry` is dereferenced
   unconditionally when building `source_location`, outside the `if`. See §11
   item 1.
 
-### 4.3 `create_inline_stack_frames` (`src/stack.cpp:128`)
+### 4.3 `create_inline_stack_frames` (`src/stack.cpp:142`)
 
 Emits the remaining logical frames for the *same* physical frame, walking
 outward from the second-innermost entry:
@@ -312,7 +313,7 @@ semantics a backtrace needs. Note every frame in the group shares the **same
 
 ## 5. `inline_height_` — pretending we haven't stepped in yet
 
-`reset_inline_height()` (`src/stack.cpp:26`) counts, from the innermost outward,
+`reset_inline_height()` (`src/stack.cpp:27`) counts, from the innermost outward,
 how many inlined frames have `low_pc() == pc` — i.e. the PC sits exactly on the
 first instruction of an inlined body.
 
@@ -337,14 +338,14 @@ simulates it with a counter.
 `stack::simulate_inlined_step_in()` just does `--inline_height_`, which slides
 the window one frame deeper — the user appears to step into `bar`, then `baz`,
 without a single instruction being executed. `target::step_in()`
-(`src/target.cpp:82`) takes that shortcut before touching `ptrace`.
+(`src/target.cpp:544`) takes that shortcut before touching `ptrace`.
 
-`unwind()` sets `current_frame_ = inline_height_` (line 59) so the selected
+`unwind()` sets `current_frame_ = inline_height_` (line 61) so the selected
 frame is the first *visible* one.
 
 ---
 
-## 6. Why `- 1` on the return address (line 102)
+## 6. Why `- 1` on the return address (line 106)
 
 The unwound `%rip` is a **return address**: it points at the instruction *after*
 the `call`. Using it directly for lookups is wrong in two ways.
@@ -378,8 +379,8 @@ the address actually printed.
 
 ## 7. The CFI step: `dwarf.cfi().unwind(...)`
 
-Line 99 is where one physical frame is popped. Implementation:
-`gsdb::call_frame_information::unwind` (`src/dwarf.cpp:1625`).
+Line 104 is where one physical frame is popped. Implementation:
+`gsdb::call_frame_information::unwind` (`src/dwarf.cpp:1762`).
 
 ```
  file_pc
@@ -420,21 +421,25 @@ Line 99 is where one physical frame is popped. Implementation:
 
 The CFI byte stream is a program that builds one *row* of a conceptual table:
 "at address L, register R can be recovered by rule X". `unwind_context`
-(`src/dwarf.cpp:652`) is that row.
+(`src/dwarf.cpp:671`) is that row.
 
-| Rule (`src/dwarf.cpp:636-650`) | Meaning | Applied as |
+| Rule (`src/dwarf.cpp:639-665`) | Meaning | Applied as |
 | --- | --- | --- |
 | `undefined_rule` | value is lost in this frame | `regs.undefine(id)` |
 | `same_rule` | callee preserved it — already correct | no-op |
 | `offset_rule{n}` | saved in memory | `reg = *(uint64_t*)(CFA + n)` |
 | `val_offset_rule{n}` | the *value* is `CFA + n` | `reg = CFA + n` |
 | `register_rule{r}` | old value lives in register `r` | `reg = old_regs[r]` |
+| `expr_rule{E}` | saved in memory at the address DWARF expression `E` computes | `reg = *(uint64_t*)eval(E)` |
+| `val_expr_rule{E}` | the *value* is what `E` computes | `reg = eval(E)` |
 | `cfa_register_rule{r,n}` | how to compute the CFA itself | `CFA = old_regs[r] + n` |
+| `cfa_expr_rule{E}` | CFA computed by a DWARF expression | `CFA = eval(E)` |
 
 `DW_CFA_remember_state` / `DW_CFA_restore_state` push/pop the whole row onto
 `ctx.rule_stack` — compilers emit these around epilogues and cold paths.
-`DW_CFA_*expression` opcodes currently `error::send("DWARF expressions not yet
-implemented!")`.
+The `DW_CFA_*expression` opcodes now produce the expression rules above, but
+`DW_CFA_expression` and `DW_CFA_val_expression` store each other's rule type
+(`src/dwarf.cpp:822, 832`; bug-audit M1).
 
 ### 7.2 CFA and the frame boundary
 
@@ -469,7 +474,7 @@ Typical x86-64 CIE + prologue for a frame-pointer function:
    movq %rsp,%rbp DW_CFA_def_cfa_register r6             ; CFA = rbp + 16
 ```
 
-`execute_unwind_rules` (`src/dwarf.cpp:809`) then does:
+`execute_unwind_rules` (`src/dwarf.cpp:856`) then does:
 
 ```cpp
 cfa = old_regs[cfa_rule.reg] + cfa_rule.offset;
@@ -499,10 +504,11 @@ DWARF register numbers used on x86-64:
 
 | Condition | Line | When it fires |
 | --- | --- | --- |
-| `file_pc.elf_file() == nullptr` before the loop | 70 | PC not inside any section of the main ELF (JIT, vDSO, corrupted PC) |
-| `elf != &target_->get_elf()` | 78 | The unwound return address left the main executable — almost always the libc frame that called `main` (`__libc_start_call_main`). This is the normal exit. |
-| `virt_pc.addr() == 0` | 78 | Guards a zero PC. Note that after the first iteration `virt_pc` is `ra - 1`, so a zero return address wraps to `0xFFFF'FFFF'FFFF'FFFF` and is caught by the ELF test instead, not by this one. |
-| `inline_stack.empty()` | 83–85 | No `DW_TAG_subprogram` covers the PC — a PLT stub, or a function compiled without debug info. Truncates the backtrace at that point. |
+| `file_pc.elf_file() == nullptr` before the loop | 71 | PC not inside any section of any loaded ELF object (JIT, corrupted PC) |
+| `elf == nullptr` | 80 | The unwound return address is outside every loaded ELF object. Until the shared-library work the test was `elf != &target_->get_elf()`, which stopped at the executable boundary. |
+| `virt_pc.addr() == 0` | 80 | Guards a zero PC. Note that after the first iteration `virt_pc` is `ra - 1`, so a zero return address wraps to `0xFFFF'FFFF'FFFF'FFFF` and is caught by the ELF test instead, not by this one. |
+| `inline_stack.empty()` | 86–88 | No `DW_TAG_subprogram` covers the PC — a PLT stub, or a function compiled without debug info. Truncates the backtrace at that point. This is now the normal exit: the libc frame that called `main` (`__libc_start_call_main`) has no DWARF here. |
+| CFI step throws | 100–111 | No FDE covers the PC (`"No unwind information at PC!"`), an undefined `%rip`, or any other unwind error. The `catch` breaks out of the loop and keeps the frames built so far. |
 
 `virt_addr::to_file_addr()` is what makes the ELF test work: it calls
 `get_section_containing_address()` first and returns a default-constructed
@@ -545,8 +551,11 @@ Target stopped inside inlined `baz`; `main` → `foo`(+`bar`+`baz`).
         the `foo(21)` call, i.e. the source line of the call, not 0x1171
  cfi().unwind(...) → rip = 0x7fff'f7d... inside libc
  virt_pc = that - 1
- file_pc = virt_pc.to_file_addr(main elf)  → not in any section
- elf     = nullptr  ≠ &get_elf()           → loop exits
+ file_pc = virt_pc.to_file_addr(all elves) → in libc.so.6
+ elf     = libc's elf                      → keep going
+
+ ── iteration 3 ───────────────────────────────────────────────────────
+ inline_stack_at_address(libc pc) = []  (no DWARF)    → return
 
  ── result ────────────────────────────────────────────────────────────
  frames_ = [ baz(inl), bar(inl), foo, main ]
@@ -578,7 +587,7 @@ Per halt:
 - DIE-tree descent per frame for the inline stack, plus the lazily built
   `function_index_` on first use.
 
-Called from `target::notify_stop()` (`src/target.cpp:76`), i.e. after *every*
+Called from `target::notify_stop()` (`src/target.cpp:536`), i.e. after *every*
 stop — including every single instruction of a source-level `step`. This is the
 main reason `step_in`/`step_over` loops feel slow on large binaries.
 
@@ -587,12 +596,13 @@ main reason `step_in`/`step_over` loops feel slow on large binaries.
 ## 11. Notes and caveats
 
 Observations from reading the current implementation. Nothing here has been
-changed — flagged for review only.
+changed — flagged for review only. Items 3 and 5 have since been fixed in the
+source; the rest still apply.
 
 1. **`create_base_frame` dereferences `line_entry` outside its own guard**
-   (`src/stack.cpp:119-125`). The `if (line_entry != line_table::iterator{})`
+   (`src/stack.cpp:127-135`). The `if (line_entry != line_table::iterator{})`
    test protects the `backtrace_pc` assignment, but `line_entry->file_entry` and
-   `line_entry->line` on line 125 run unconditionally. A default-constructed
+   `line_entry->line` on line 135 run unconditionally. A default-constructed
    iterator's `operator->` returns `&current_` (a default `entry`), so this is
    not UB, but the frame silently gets `source_location{nullptr, 1}` — a null
    file pointer that any consumer must handle.
@@ -600,7 +610,7 @@ changed — flagged for review only.
 2. **`ctx.register_rules.emplace(...)` never overwrites.**
    `std::unordered_map::emplace` is a no-op when the key already exists, yet
    every rule-setting opcode in `execute_cfi_instruction`
-   (`src/dwarf.cpp:692-790`) uses it. Per the DWARF spec a later row must
+   (`src/dwarf.cpp:686-854`) uses it (bug-audit M2). Per the DWARF spec a later row must
    *replace* an earlier rule for the same register. As written, `DW_CFA_restore`
    / `DW_CFA_restore_extended` cannot undo an earlier `DW_CFA_offset`, and a
    register saved to a new slot mid-function keeps the stale rule. Functions
@@ -609,12 +619,13 @@ changed — flagged for review only.
    `cfa_rule` is a plain member and is assigned directly, so the CFA itself is
    unaffected.
 
-3. **Undefined return address throws rather than terminating the loop.** If CFI
+3. **Fixed: an undefined return address no longer escapes `unwind()`.** If CFI
    marks r16 `DW_CFA_undefined` (the convention at `_start`),
-   `regs.undefine(rip)` runs and line 102's `read_by_id_as` hits the
+   `regs.undefine(rip)` runs and line 106's `read_by_id_as` hits the
    `"Register is undefined"` throw in `registers::read` (`src/registers.cpp:47`).
-   Dynamically linked binaries never reach this because the loop exits on the
-   libc frame first; a statically linked target unwound to `_start` would.
+   This used to propagate out of `unwind()`. The CFI step is now wrapped in
+   `try`/`catch` (`src/stack.cpp:100-111`), so the loop ends and keeps the frames
+   built so far.
 
 4. **Empty `frames_` is reachable.** If the very first
    `inline_stack_at_address` comes back empty (PC in a PLT stub, or in a
@@ -623,12 +634,13 @@ changed — flagged for review only.
    `get_pc()`, and `current_frame()` all index `frames_` unguarded, so callers
    must check `has_frames()` first.
 
-5. **No shared-library unwinding.** The loop is explicitly single-object
-   (`elf == &target_->get_elf()`). Backtraces stop at the executable boundary,
-   so a crash inside libc shows nothing, and a callback invoked from a library
-   loses everything above it. Supporting this needs a per-module ELF/DWARF
-   registry keyed by the runtime address ranges from `/proc/<pid>/maps` or the
-   dynamic linker's rendezvous structure.
+5. **Fixed: shared-library unwinding.** The loop used to be single-object
+   (`elf == &target_->get_elf()`), so backtraces stopped at the executable
+   boundary. The shared-library work added the per-module registry this needed
+   (`elf_collection`, filled from the dynamic linker's rendezvous structure). The
+   loop now runs `while (virt_pc.addr() != 0 and elf)` and maps each PC through
+   `target_->get_elves()` (`src/stack.cpp:80, 112`), so any loaded object with
+   DWARF is unwound. See `shared-libraries.md`.
 
 6. **No unwind row caching.** CIE + FDE instructions are re-executed on every
    halt for every frame. A cache keyed by `(fde_offset, pc)` — or even just
@@ -641,12 +653,12 @@ changed — flagged for review only.
 
 | Concern | Location |
 | --- | --- |
-| `unwind()`, frame construction | `src/stack.cpp:57-138` |
+| `unwind()`, frame construction | `src/stack.cpp:58-152` |
 | `stack` / `stack_frame` definitions | `include/libgsdb/stack.hpp` |
-| CFI driver | `src/dwarf.cpp:1625` (`call_frame_information::unwind`) |
-| `.eh_frame_hdr` binary search | `src/dwarf.cpp:1575` (`eh_hdr::operator[]`) |
-| CFI opcode interpreter | `src/dwarf.cpp:666` (`execute_cfi_instruction`) |
-| Rule application | `src/dwarf.cpp:809` (`execute_unwind_rules`) |
-| Inline stack from DIEs | `src/dwarf.cpp:1525` (`inline_stack_at_address`) |
-| Stop hook that drives it all | `src/target.cpp:76` (`target::notify_stop`) |
+| CFI driver | `src/dwarf.cpp:1762` (`call_frame_information::unwind`) |
+| `.eh_frame_hdr` binary search | `src/dwarf.cpp:1712` (`eh_hdr::operator[]`) |
+| CFI opcode interpreter | `src/dwarf.cpp:686` (`execute_cfi_instruction`) |
+| Rule application | `src/dwarf.cpp:856` (`execute_unwind_rules`) |
+| Inline stack from DIEs | `src/dwarf.cpp:1662` (`inline_stack_at_address`) |
+| Stop hook that drives it all | `src/target.cpp:536` (`target::notify_stop`) |
 | Pointer-encoding background | `.claude/got-plt-and-eh-frame-pointer-encodings.md` |

@@ -539,7 +539,7 @@ abbreviation table, but it meant `contains(nonzero_attribute)` returned true for
 the first attribute in any non-empty DIE — affecting line-table setup,
 compile-unit address checks, and function indexing.
 
-It now compares (`src/dwarf.cpp:954`):
+It now compares (`src/dwarf.cpp:1057`):
 
 ```cpp
 bool gsdb::die::contains(std::uint64_t attribute) const {
@@ -638,7 +638,7 @@ flowchart TD
 Before building on this heavily, the likely cleanup order is:
 
 1. ~~Fix `die::contains()`.~~ Done — see above.
-2. Make `DW_LNS_set_isa` consume its operand (`src/dwarf.cpp:1415` still just
+2. Make `DW_LNS_set_isa` consume its operand (`src/dwarf.cpp:1552` still just
    `break`s).
 3. Filter `end_sequence` in source-line lookup.
 4. Decide whether `line_table` should materialize rows or keep lazy iteration.

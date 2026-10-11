@@ -1,6 +1,6 @@
 # `stack::reset_inline_height()` explained
 
-Location: `src/stack.cpp:26`
+Location: `src/stack.cpp:27`
 
 ```cpp
 void gsdb::stack::reset_inline_height() {
@@ -30,7 +30,7 @@ the same physical PC.
 When the compiler inlines functions, several source-level "frames" collapse onto
 the **same machine address**. DWARF records this with nested
 `DW_TAG_inlined_subroutine` DIEs. `inline_stack_at_pc()` (which delegates to
-`dwarf::inline_stack_at_address()`, `src/dwarf.cpp:1525`) flattens that nesting
+`dwarf::inline_stack_at_address()`, `src/dwarf.cpp:1662`) flattens that nesting
 into a vector:
 
 ```
@@ -102,9 +102,9 @@ their entry point; present the frame two levels up from the deepest."
 
 ## Lifecycle
 
-Per the header (`include/libgsdb/stack.hpp:29`), this is **called every time the
+Per the header (`include/libgsdb/stack.hpp:31`), this is **called every time the
 process halts**. It is no longer called directly from `target::notify_stop()`;
-that now calls `stack::unwind()` (`src/stack.cpp:57`), whose first act is
+that now calls `stack::unwind()` (`src/stack.cpp:58`), whose first act is
 `reset_inline_height()` followed by `current_frame_ = inline_height_`. Each stop
 still recomputes the cursor from scratch:
 

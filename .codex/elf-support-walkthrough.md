@@ -621,7 +621,7 @@ print symbol name
 ```
 
 This check has since moved out of the CLI into
-`target::function_name_at_address()` (`src/target.cpp:272`), which first asks
+`target::function_name_at_address()` (`src/target.cpp:763`), which first asks
 DWARF for a function DIE and only falls back to the ELF symbol table:
 
 ```cpp
@@ -630,8 +630,10 @@ DWARF for a function DIE and only falls back to the ELF symbol table:
            ELF64_ST_TYPE(elf_func.value()->st_info) == STT_FUNC) {
 ```
 
-If the symbol is a function, its name is demangled and returned, and the CLI
-appends it to the stop message.
+If the symbol is a function, its raw symbol name is returned (the
+`__cxa_demangle` call is commented out, so C++ names stay mangled). Either way
+the name is prefixed with the object's file name and a backtick
+(`` libc.so.6`puts ``), and the CLI appends it to the stop message.
 
 ## Load Bias
 

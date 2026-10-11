@@ -68,9 +68,9 @@ source lines rather than machine instructions) and for
 
 This has since been built. `line_table` reads `.debug_line` per compile unit
 (the CU's root DIE has a `DW_AT_stmt_list` attribute giving the offset into
-`.debug_line` — see `parse_line_table()`, `src/dwarf.cpp:539`), runs the state
+`.debug_line` — see `parse_line_table()`, `src/dwarf.cpp:538`), runs the state
 machine lazily through an iterator, and exposes `get_entry_by_address(file_addr)`
-and `get_entries_by_line(path, line)` (`src/dwarf.cpp:1485`). `target::step_in()`,
+and `get_entries_by_line(path, line)` (`src/dwarf.cpp:1604`). `target::step_in()`,
 `step_over()`, and `step_out()` are built on it, and the CLI's
 `breakpoint set <file>:<line>` routes to `target::create_line_breakpoint()`
-(`tools/gsdb.cpp:496`).
+(`tools/gsdb.cpp:515`).
