@@ -742,12 +742,14 @@ std::size_t gsdb::type::alignment() const {
         return byte_size();
     }
 
-    if (is_class_type()) {
-        // Class types should be aligned to the same boundary as their most
-        // strictly aligned member (that is, the member with the largest
-        // alignment boundary expectation).
-        std::size_t max_alignment = 0;
-        for (auto child : get_die().children()) {
+    auto stripped = strip_cv_typedef();
+    auto die = stripped.get_die();
+    auto tag = die.abbrev_entry()->tag;
+
+    if (tag == DW_TAG_class_type or tag == DW_TAG_structure_type or
+        tag == DW_TAG_union_type) {
+        std::size_t max_alignment = 1;  // empty class still has alignment 1
+        for (auto child : die.children()) {
             if (child.abbrev_entry()->tag == DW_TAG_member and
                 (child.contains(DW_AT_data_member_location) or
                  child.contains(DW_AT_data_bit_offset))) {
@@ -760,13 +762,11 @@ std::size_t gsdb::type::alignment() const {
         return max_alignment;
     }
 
-    // Arrays should be aligned to the same boundary as their element type.
-    if (get_die().abbrev_entry()->tag == DW_TAG_array_type) {
-        return get_die()[DW_AT_type].as_type().alignment();
+    if (tag == DW_TAG_array_type) {
+        // Arrays should be aligned to the same boundary as their element type.
+        return die[DW_AT_type].as_type().alignment();
     }
-
-    // Other types should be aligned to the same boundary as their byte size.
-    return byte_size();
+    return stripped.byte_size();
 }
 
 bool gsdb::type::has_unaligned_fields() const {
@@ -775,15 +775,15 @@ bool gsdb::type::has_unaligned_fields() const {
     }
 
     if (is_class_type()) {
-        for (auto child : get_die().children()) {
+        for (auto child : strip_cv_typedef().get_die().children()) {
             if (child.abbrev_entry()->tag == DW_TAG_member and
                 child.contains(DW_AT_data_member_location)) {
                 // If the member’s byte offset isn’t aligned to the expected
                 // boundary
                 auto member_type = child[DW_AT_type].as_type();
-                if (child[DW_AT_data_member_location].as_int() %
-                        member_type.alignment() !=
-                    0) {
+                auto align = member_type.alignment();
+                if (align != 0 and
+                    child[DW_AT_data_member_location].as_int() % align != 0) {
                     return true;
                 }
                 // If the member itself has unaligned fields
