@@ -2,7 +2,7 @@
 
 Date: 2026-09-06 · Reviewer: Claude (`cpp-style-review` skill, first run) · Scope: coding style and best-practice conformance only. This is not a bug hunt or a security review; where a guideline violation also happens to be a latent defect, the finding says so in one line and moves on.
 
-Rule citation forms: `CG X.N` = C++ Core Guidelines (exact upstream titles quoted), `EMC++ #n` = Effective Modern C++, `EC++ #n` = Effective C++ 3e, `ESTL #n` = Effective STL, `CCS #n` = Sutter/Alexandrescu C++ Coding Standards, `ToTW #n` = Abseil Tip of the Week, `CERT XXX##-CPP` = SEI CERT C++, `Turner` = cppbestpractices.
+Rule citation forms: `CG X.N` = C++ Core Guidelines (exact upstream titles quoted), `EMC++ Item n` = Effective Modern C++, `EC++ Item n` = Effective C++ 3e, `ESTL Item n` = Effective STL, `CCS Item n` = Sutter/Alexandrescu C++ Coding Standards, `ToTW #n` = Abseil Tip of the Week, `CERT XXX##-C`/`-CPP` = SEI CERT C/C++, `cppbestpractices` = Jason Turner et al., *C++ Best Practices*. Appendix B lists every source with its title and a link.
 
 ---
 
@@ -56,6 +56,7 @@ Caveats:
 - Effective Modern C++ (all 42 items) — `~/.claude/skills/cpp-style-review/references/effective-modern-cpp.md`.
 - C++ Core Guidelines: upstream document dated **Jun 14, 2026**, repository commit `33bcd01` (2026-08-06), fetched **2026-09-06**; 497 rule headings indexed; curated checklist validated against the index (451 IDs, 0 unknown).
 - Other sources cited below: CCS, EC++, ESTL, Abseil ToTW, Google C++ Style Guide (the project's clang-format base), SEI CERT C++, Turner's cppbestpractices, LLVM coding standards.
+- Every source is listed with its title and a link (or, for books, edition and ISBN) in Appendix B. Citations were re-checked on 2026-10-10: each finding's `Rules:` line now names the source for every problem in it, and clustered findings tag each sub-issue with `(→ …)`.
 
 ---
 
@@ -98,7 +99,7 @@ Format: `Rules` → `Where` → `What` → `Why` → `Fix`. Repeated patterns ar
 ### 5.1 Ownership & lifetime
 
 ### 1. `elf` constructor acquires three resources without RAII members — must
-Rules: CG E.6 "Use RAII to prevent leaks"; CG C.31 "All resources acquired by a class must be released by the class's destructor"; CG R.1 "Manage resources automatically using resource handles and RAII"; CG C.49 "Prefer initialization to assignment in constructors"; CCS #13; EC++ #13.
+Rules: CG E.6 “Use RAII to prevent leaks”; CG C.31 “All resources acquired by a class must be released by the class's destructor”; CG R.1 “Manage resources automatically using resource handles and RAII (Resource Acquisition Is Initialization)”; CG C.49 “Prefer initialization to assignment in constructors” (the `path_ = path;` assignment); CCS Item 13 “Ensure resources are owned by objects. Use explicit RAII and smart pointers”; EC++ Item 13 “Use objects to manage resources”.
 Where: `src/elf.cpp:23-61`, `include/libgsdb/elf.hpp:93-100`.
 What:
 ```cpp
@@ -121,7 +122,7 @@ elf::elf(const std::filesystem::path& path)
 This also resolves the indeterminate `fd_`/`file_size_`/`data_`/`header_` members (#16) and the `path_ = path;` assignment (#17).
 
 ### 2. `symbol_name_map_` keys view memory that is freed immediately — must
-Rules: CG SL.str.1 "Use `std::string` to own character sequences"; CG SL.str.2 "Use `std::string_view` or `gsl::span<char>` to refer to character sequences"; CG R.12 "Immediately give the result of an explicit resource allocation to a manager object"; CG R.10 "Avoid `malloc()` and `free()`"; Pro.lifetime; CERT MEM50-CPP.
+Rules: CG SL.str.1 “Use `std::string` to own character sequences”; CG SL.str.2 “Use `std::string_view` or `gsl::span<char>` to refer to character sequences”; CG R.12 “Immediately give the result of an explicit resource allocation to a manager object”; CG R.10 “Avoid `malloc()` and `free()`”; CG Pro.lifetime “Lifetime safety profile”; CERT MEM50-CPP “Do not access freed memory”.
 Where: `include/libgsdb/elf.hpp:125-127`; `src/elf.cpp:178-188`.
 Status: fixed in `fd6be79` (bug-audit C1). `symbol_name_map_` is now `std::unordered_multimap<std::string, Elf64_Sym*, string_hash, std::equal_to<>>` with a transparent `string_hash` (`include/libgsdb/elf.hpp:108-113`), so `insert` copies the demangled name before `free()`. That is the alternative named at the end of the Fix below.
 What (before the fix):
@@ -146,7 +147,7 @@ if (demangle_status == 0) {
 (`std::vector<std::string>` is fine as storage only if it is never resized after the views are taken; `std::deque<std::string>` or a `reserve()` up front removes that trap. Alternatively key the multimap by `std::string` and enable C++20 heterogeneous lookup with `std::hash<std::string_view>`-compatible hasher + `std::equal_to<>`.)
 
 ### 3. `pipe` is implicitly copyable and would double-close — must
-Rules: CG C.21 "If you define or `=delete` any copy, move, or destructor function, define or `=delete` them all"; EMC++ #17; CCS #52-#53; EC++ #6.
+Rules: CG C.21 “If you define or `=delete` any copy, move, or destructor function, define or `=delete` them all”; EMC++ Item 17 “Understand special member function generation”; CCS Item 52 “Copy and destroy consistently”; CCS Item 53 “Explicitly enable or disable copying”; EC++ Item 6 “Explicitly disallow the use of compiler-generated functions you do not want”; CG ES.27 “Use `std::array` or `stack_array` for arrays on the stack” (the `fds_[2]` C array in the Fix).
 Where: `include/libgsdb/pipe.hpp:9-33`.
 What: the class declares `~pipe()` and nothing else among the special members; `pipe(const pipe&)` and `operator=` are therefore generated and copy `fds_[2]` bit-for-bit.
 Why: a resource-owning type with a user-declared destructor must decide copy/move explicitly; the implicit copy here means two destructors call `close()` on the same descriptors. The other resource types in the project (`process`, `elf`, `breakpoint_site`, `watchpoint`) do this correctly — `pipe` is the odd one out.
@@ -160,26 +161,26 @@ std::array<int, 2> fds_{-1, -1};                                             // 
 ```
 
 ### 4. Manual C resource pairs without RAII — should
-Rules: CG R.1; CG R.10 "Avoid `malloc()` and `free()`"; CG R.12; CG E.19 "Use a `final_action` object to express cleanup if no suitable resource handle is available"; CG CPL.3 "If you must use C for interfaces, use C++ in the calling code using such interfaces"; CERT FIO51-CPP "Close files when they are no longer needed".
+Rules: CG R.1 “Manage resources automatically using resource handles and RAII (Resource Acquisition Is Initialization)”; CG R.10 “Avoid `malloc()` and `free()`”; CG R.12 “Immediately give the result of an explicit resource allocation to a manager object”; CG E.19 “Use a `final_action` object to express cleanup if no suitable resource handle is available”; CG CPL.3 “If you must use C for interfaces, use C++ in the calling code using such interfaces”; CERT FIO51-CPP “Close files when they are no longer needed”; CERT POS54-C “Detect and handle POSIX library errors”; CG SL.io.2 “When reading, always consider ill-formed input”.
 Where (6 patterns, 14 sites):
-- `readline()` result + two `free(line)` paths — `tools/gsdb.cpp:1101-1116`.
-- `popen`/`pclose` and `getline(&line, &len, pipe)`/`free(line)` with early-return bookkeeping — `test/tests.cpp:62-91`.
-- `open("/dev/null")` … `close(dev_null)` at the end of 6 test cases — `test/tests.cpp:579/604, 773/814, 818/865, 888/904, 908/933` (leaks on any failed `REQUIRE`, which throws).
-- `mkdtemp(tmp_dir)` return value unchecked and the directory (`/tmp/gsdb-XXXXXX/linux-vdso.so.1`) never removed — `src/target.cpp:64-67`.
-- `abi::__cxa_demangle` … `free` — `src/elf.cpp:182-186` (see #2).
-- `std::ifstream file{path.string()}` opened without checking `is_open()` — `tools/gsdb.cpp:757` (SL.io.2, minor).
+- `readline()` result + two `free(line)` paths — `tools/gsdb.cpp:1101-1116`. (→ CG R.10; CG R.12; CG CPL.3)
+- `popen`/`pclose` and `getline(&line, &len, pipe)`/`free(line)` with early-return bookkeeping — `test/tests.cpp:62-91`. (→ CG R.1; CG E.19; CERT FIO51-CPP)
+- `open("/dev/null")` … `close(dev_null)` at the end of 6 test cases — `test/tests.cpp:579/604, 773/814, 818/865, 888/904, 908/933` (leaks on any failed `REQUIRE`, which throws). (→ CG R.1; CG E.19)
+- `mkdtemp(tmp_dir)` return value unchecked and the directory (`/tmp/gsdb-XXXXXX/linux-vdso.so.1`) never removed — `src/target.cpp:64-67`. (→ CERT POS54-C; CG R.1)
+- `abi::__cxa_demangle` … `free` — `src/elf.cpp:182-186` (see #2). (→ CG R.12; CG R.10)
+- `std::ifstream file{path.string()}` opened without checking `is_open()` — `tools/gsdb.cpp:757` (SL.io.2, minor). (→ CG SL.io.2)
 Why: every one of these is a resource whose release depends on control flow reaching a specific line; the project already has the right vocabulary (`gsdb::pipe` is a proper RAII wrapper) but does not apply it to fds, C strings, and temp files.
 Fix: a small `include/libgsdb/detail/raii.hpp` with `unique_fd` (reused by #1), `using c_string_ptr = std::unique_ptr<char, decltype(&std::free)>`, `unique_pipe_stream` for `popen`, and a `scope_exit`/`final_action` (`std::experimental::scope_exit` or ten lines). In tests, an RAII `dev_null` fixture removes 12 lines of manual bookkeeping.
 
 ### 5. `line_table::entry::file_entry` points into a `mutable` vector that can grow — should
-Rules: CG R.3 "A raw pointer (a `T*`) is non-owning"; CG ES.65 "Don't dereference an invalid pointer"; Pro.lifetime; EMC++ #16 (mutable in const member functions).
+Rules: CG R.3 “A raw pointer (a `T*`) is non-owning”; CG ES.65 “Don't dereference an invalid pointer”; CG Pro.lifetime “Lifetime safety profile”; EMC++ Item 16 “Make const member functions thread safe” (the `mutable` caches written in `const` functions).
 Where: `include/libgsdb/dwarf.hpp:362` (`mutable std::vector<file> file_names_`), `:381` (`file* file_entry`), `src/dwarf.cpp:1493` (pointer taken), `:1578` (`file_names_.push_back(file)` from `DW_LNE_define_file`).
 What: each yielded row stores `&table_->file_names_[idx - 1]`; a later `DW_LNE_define_file` opcode `push_back`s into the same vector and can reallocate, invalidating every `file_entry` pointer already handed to callers (`source_location::file`, `stack_frame::location`).
 Why: raw pointers into a growable container are only safe while the container is not modified; the guideline is to either make that invariant true (stable storage) or store an index/handle instead. GCC does not emit `DW_LNE_define_file` today, which is why this has not bitten; it is still an unstated lifetime contract.
-Fix: store the index (`std::size_t file_index` already exists — expose a `const file& file() const` accessor on the table instead of a cached pointer), or make `file_names_` a `std::deque<file>` (stable element addresses on `push_back`) and document the invariant. Also document that `line_table`, `dwarf` (`function_index_`), and `call_frame_information` (`cie_map_`) are single-threaded caches (EMC++ #16).
+Fix: store the index (`std::size_t file_index` already exists — expose a `const file& file() const` accessor on the table instead of a cached pointer), or make `file_names_` a `std::deque<file>` (stable element addresses on `push_back`) and document the invariant. Also document that `line_table`, `dwarf` (`function_index_`), and `call_frame_information` (`cie_map_`) are single-threaded caches (EMC++ Item 16).
 
 ### 6. `std::optional<T*>` returns and undocumented non-owning pointers — consider
-Rules: CG F.60 "Prefer `T*` over `T&` when 'no argument' is a valid option"; ToTW #163; CG C.32 "If a class has a raw pointer (`T*`) or reference (`T&`), consider whether it might be owning".
+Rules: CG F.60 “Prefer `T*` over `T&` when "no argument" is a valid option” (a pointer already has an "absent" state); ToTW #163 “Passing std::optional parameters” (same reasoning, written for parameters); CG C.32 “If a class has a raw pointer (`T*`) or reference (`T&`), consider whether it might be owning” (the back-pointers).
 Where: `include/libgsdb/elf.hpp:39, 73-79` (five `std::optional<const Elf64_Shdr*>`/`std::optional<const Elf64_Sym*>` returns); `src/process.cpp:661` (`std::optional<breakpoint_site*> to_reenable`); `include/libgsdb/target.hpp:32` (`thread_state* state` relies on `unordered_map` node stability); `include/libgsdb/breakpoint_site.hpp:45,47`, `watchpoint.hpp:47`, `stack.hpp:73` (back-pointers).
 Why: a pointer already has an "absent" state; wrapping it in `optional` doubles the checks callers must write (`sym.value()->st_name`) without adding information. Non-owning back-pointers are fine (the project is consistent about ownership living in `unique_ptr`s) but their validity assumptions (e.g. `std::unordered_map` never invalidates element pointers on rehash) deserve a one-line comment where they are stored.
 Fix: return `const Elf64_Sym*` (nullptr = absent) or, where callers always dereference, a reference plus a `bool has_*` query; replace `std::optional<breakpoint_site*>` with `breakpoint_site* to_reenable = nullptr;`.
@@ -187,7 +188,7 @@ Fix: return `const Elf64_Sym*` (nullptr = absent) or, where callers always deref
 ### 5.2 Interfaces & functions
 
 ### 7. Stored callback captures by reference — must
-Rules: CG F.53 "Avoid capturing by reference in lambdas that will be used non-locally, including returned, stored on the heap, or passed to another thread"; CG F.54 "When writing a lambda that captures `this` or any class data member, don't use `[=]` default capture" (same reasoning); EMC++ #31.
+Rules: CG F.53 “Avoid capturing by reference in lambdas that will be used non-locally, including returned, stored on the heap, or passed to another thread”; CG F.54 “When writing a lambda that captures `this` or any class data member, don't use `[=]` default capture” (same reasoning for implicit `this` capture); EMC++ Item 31 “Avoid default capture modes”.
 Where: `src/target.cpp:829-832`.
 What:
 ```cpp
@@ -200,62 +201,62 @@ Why: the closure is stored in a `breakpoint` owned by `target::breakpoints_` and
 Fix: `install_hit_handler([this] { reload_dynamic_libraries(); return true; });`
 
 ### 8. Adjacent boolean parameters and bare `true`/`false` at call sites — should
-Rules: CG I.24 "Avoid adjacent parameters that can be invoked by the same arguments in either order"; CG I.4 "Make interfaces precisely and strongly typed"; ToTW #94 (callsite readability and `bool` parameters); Enum.2 "Use enumerations to represent sets of related named constants".
+Rules: CG I.24 “Avoid adjacent parameters that can be invoked by the same arguments in either order with different meaning”; CG I.4 “Make interfaces precisely and strongly typed”; ToTW #94 “Callsite Readability and bool Parameters”; CG Enum.2 “Use enumerations to represent sets of related named constants”.
 Where (11 signatures): `include/libgsdb/breakpoint.hpp:89, 110, 129-130, 148`; `include/libgsdb/breakpoint_site.hpp:38-42`; `include/libgsdb/target.hpp:107-115`; `include/libgsdb/process.hpp:118-120` (`bool debug`), `:162-170`; `include/libgsdb/process.hpp:268` (`bool terminate_on_end, bool is_attached`). 12 call sites pass literals: `src/target.cpp:492, 500, 620, 828`; `test/tests.cpp:147, 167, 187, 409, 449, 488, 499, 552`.
 What: `create_breakpoint_site(address, false, true)`, `process::launch(path, true, channel.get_write())`, `new process(pid, /*terminate_on_end=*/true, debug)`.
 Why: two adjacent `bool`s swap silently; a reader of `create_address_breakpoint(entry_point, false, true)` has to open the header. The tests already show the better habit once (`bool close_on_exec = false; gsdb::pipe channel(close_on_exec);`).
 Fix: `enum class stoppoint_kind { software, hardware };`, `enum class visibility { user, internal };`, `enum class launch_mode { traced, untraced };` (or one `struct breakpoint_options { stoppoint_kind kind = software; visibility vis = user; }` used with designated initializers). Where the API must stay, at least name the arguments at call sites (`/*hardware=*/false, /*internal=*/true`) as `process.cpp:550` already does.
 
 ### 9. Parameter passing: read-only `std::string`/`path`/`vector` by value, sinks not moved — should
-Rules: CG F.16 "For 'in' parameters, pass cheaply-copied types by value and others by reference to `const`"; CG F.18 "For 'will-move-from' parameters, pass by `X&&` and `std::move` the parameter"; EMC++ #41; ToTW #77, #117.
+Rules: CG F.16 “For "in" parameters, pass cheaply-copied types by value and others by reference to `const`”; CG F.18 “For "will-move-from" parameters, pass by `X&&` and `std::move` the parameter”; EMC++ Item 41 “Consider pass by value for copyable parameters that are cheap to move and always copied”; ToTW #117 “Copy Elision and Pass-by-value”; ToTW #77 “Temporaries, Moves, and Copies”; CG P.9 “Don't waste time or space”.
 Where:
-- read-only by value: `dwarf::find_functions(std::string)` (`dwarf.hpp:461`, `dwarf.cpp:1367`), `target::find_functions(std::string)` (`target.hpp:105`), `elf_collection::get_elf_by_path(std::filesystem::path)` (`elf.hpp:160`), `line_table::get_entries_by_line(std::filesystem::path, ...)` (`dwarf.hpp:349`), `target::get_line_entries_by_line(std::filesystem::path, ...)` (`target.hpp:131`), `parse_line_table_file(cursor&, std::filesystem::path compilation_dir, ...)` (`dwarf.cpp:515`), `process::launch(std::filesystem::path)` (`process.hpp:119`), `target::launch(std::filesystem::path)` (`target.hpp:54`), `get_section_load_bias`/`get_entry_point_offset(std::filesystem::path)` (`tests.cpp:54, 96`);
-- `const std::vector<gsdb::die> inline_stack` by *const value* (`stack.hpp:66-71`, `stack.cpp:120-122, 142-144`) — the `const` makes the copy impossible to move from;
-- sink parameters copied instead of moved: `target::create_function_breakpoint` / `create_line_breakpoint` take `std::string function_name` / `std::filesystem::path file` by value and then copy them into the `new function_breakpoint(*this, function_name, ...)` (`target.cpp:749-758`);
-- copies of `const std::string&` elements into locals used read-only: `auto command = args[1];` ×4 (`gsdb.cpp:528, 574, 663, 1040`), `auto mode_text = args[3];` (`:630`), `auto path = data[0];` (`:509`); `auto regs = target.get_stack().regs();` copies a ~1 KiB `registers` to print it (`gsdb.cpp:359`); `for (auto die : ...)` (`breakpoint.cpp:44`), `for (auto [reg, rule] : ctx.register_rules)` (`dwarf.cpp:889`), `for (auto child : current.children())` (`dwarf.cpp:1463`).
+- read-only by value: `dwarf::find_functions(std::string)` (`dwarf.hpp:461`, `dwarf.cpp:1367`), `target::find_functions(std::string)` (`target.hpp:105`), `elf_collection::get_elf_by_path(std::filesystem::path)` (`elf.hpp:160`), `line_table::get_entries_by_line(std::filesystem::path, ...)` (`dwarf.hpp:349`), `target::get_line_entries_by_line(std::filesystem::path, ...)` (`target.hpp:131`), `parse_line_table_file(cursor&, std::filesystem::path compilation_dir, ...)` (`dwarf.cpp:515`), `process::launch(std::filesystem::path)` (`process.hpp:119`), `target::launch(std::filesystem::path)` (`target.hpp:54`), `get_section_load_bias`/`get_entry_point_offset(std::filesystem::path)` (`tests.cpp:54, 96`); (→ CG F.16)
+- `const std::vector<gsdb::die> inline_stack` by *const value* (`stack.hpp:66-71`, `stack.cpp:120-122, 142-144`) — the `const` makes the copy impossible to move from; (→ CG F.16; CG F.18)
+- sink parameters copied instead of moved: `target::create_function_breakpoint` / `create_line_breakpoint` take `std::string function_name` / `std::filesystem::path file` by value and then copy them into the `new function_breakpoint(*this, function_name, ...)` (`target.cpp:749-758`); (→ CG F.18; EMC++ Item 41; ToTW #117)
+- copies of `const std::string&` elements into locals used read-only: `auto command = args[1];` ×4 (`gsdb.cpp:528, 574, 663, 1040`), `auto mode_text = args[3];` (`:630`), `auto path = data[0];` (`:509`); `auto regs = target.get_stack().regs();` copies a ~1 KiB `registers` to print it (`gsdb.cpp:359`); `for (auto die : ...)` (`breakpoint.cpp:44`), `for (auto [reg, rule] : ctx.register_rules)` (`dwarf.cpp:889`), `for (auto child : current.children())` (`dwarf.cpp:1463`). (→ CG P.9; ToTW #77)
 Why: `std::filesystem::path` and `std::string` are not "cheaply copied" (heap allocation); by-value is only right for sinks, and sinks must then be moved. The rest are needless allocations on hot paths (`find_functions` runs for every breakpoint resolve, `get_entries_by_line` for every CU).
 Fix: `const std::string&`/`std::string_view` for lookups (`unordered_multimap<std::string,...>::equal_range` needs a `std::string` unless heterogeneous lookup is enabled — see #55), `const std::filesystem::path&` for paths, `const std::vector<die>&` for the inline stacks, `std::move(function_name)`/`std::move(file)` in the factories, `const auto&` for the locals and loop variables.
 
 ### 10. `std::unique_ptr<target>&` parameters where `target&` is meant — should
-Rules: CG R.30 "Take smart pointers as parameters only to explicitly express lifetime semantics"; CG F.7 "For general use, take `T*` or `T&` arguments rather than smart pointers"; ToTW #188.
+Rules: CG R.30 “Take smart pointers as parameters only to explicitly express lifetime semantics”; CG F.7 “For general use, take `T*` or `T&` arguments rather than smart pointers”; ToTW #188 “Be Careful With Smart-Pointer Function Parameters”.
 Where: `tools/gsdb.cpp:1037-1038` (`handle_command(std::unique_ptr<gsdb::target>& target, ...)`), `:1099` (`main_loop(std::unique_ptr<gsdb::target>&)`).
 Why: neither function reseats or takes ownership of the pointer; a `unique_ptr&` parameter tells the reader "I may replace the owned object" (R.33), which is false here, and it forces every call site to have a `unique_ptr` at hand.
 Fix: `void handle_command(gsdb::target& target, std::string_view line)`; `void main_loop(gsdb::target& target)`; call with `*target`.
 
 ### 11. Single-argument constructors that are not `explicit` — should
-Rules: CG C.46 "By default, declare single-argument constructors explicit"; ToTW #142; Google:Implicit Conversions; HIC++ 7.1.4.
+Rules: CG C.46 “By default, declare single-argument constructors explicit”; Google C++ Style Guide, “Implicit Conversions”.
 Where: `include/libgsdb/elf.hpp:25` (`elf(const std::filesystem::path&)`), `include/libgsdb/disassembler.hpp:19` (`disassembler(process&)`), `include/libgsdb/dwarf.hpp:398` (`line_table::iterator(const line_table*)`), `:444` (`dwarf(const elf&)`, made `explicit` in `501504a`, bug-audit C2), `:610` (`children_range(die)`).
 Why: each of these lets a `path`, a `process&`, an `elf&`, or a `die` silently convert into a heavyweight object (e.g. a function taking `const elf&` accepts a string literal and mmaps a file). `cursor(span)` and `die(const std::byte*)` in the same layer are already `explicit`. `span(const std::vector<U>&)` (`types.hpp:67`) is intentionally implicit, mirroring `std::span`, and is fine.
 Fix: add `explicit` to the five constructors (four now remain; `dwarf`'s is done); existing code uses direct initialization everywhere so nothing else changes.
 
 ### 12. Unused parameters left named, stale `[[maybe_unused]]`, dead locals — should
-Rules: CG F.9 "Unused parameters should be unnamed"; CG I.4 (a parameter the function ignores is a false promise); CG ES.? / NL.1 (dead code).
+Rules: CG F.9 “Unused parameters should be unnamed” (unused but named parameters); CERT MSC13-C “Detect and remove unused values” (parameters and locals nobody reads); CERT MSC12-C “Detect and remove code that has no effect or is never executed” (dead statements); cppreference: `[[maybe_unused]]` attribute (the attribute only silences a warning).
 Where:
-- ignored parameters kept in the API: `process::set_hardware_breakpoint([[maybe_unused]] id, addr)` (`process.cpp:777-778`), `process::set_watchpoint([[maybe_unused]] id, ...)` (`:856`) — callers pass an id the function never uses;
-- unused but named: `parse_eh_frame_pointer([[maybe_unused]] const elf& elf, ...)` (`dwarf.cpp:233`), `parse_compile_unit(..., [[maybe_unused]] const elf& obj, ...)` (`:439`), `execute_cfi_instruction(..., [[maybe_unused]] file_addr pc)` (`:689`), `read_frame_base_result(..., [[maybe_unused]] const registers& regs)` (`:933`), `create_inline_stack_frames(..., [[maybe_unused]] file_addr pc)` (`stack.cpp:142-144`), `handle_watchpoint_list(..., [[maybe_unused]] const std::vector<std::string>& args)` (`gsdb.cpp:594-595`);
-- `[[maybe_unused]]` on functions that *are* used: `get_next_id` (`breakpoint_site.cpp:12`), `is_prefix` (`gsdb.cpp:61`), `parse_fde` (`dwarf.cpp:331`);
-- dead locals: `eh_hdr_start`, `text_section_start`, `version` (`dwarf.cpp:367-377`), `return_address_register` (`:296`), `len` (`:1559`), `[[maybe_unused]] auto pid = process_->pid();` (`target.hpp:180`), `elf_name` (`target.cpp:781`, computed and never read — no warning because `std::string` has a non-trivial destructor).
+- ignored parameters kept in the API: `process::set_hardware_breakpoint([[maybe_unused]] id, addr)` (`process.cpp:777-778`), `process::set_watchpoint([[maybe_unused]] id, ...)` (`:856`) — callers pass an id the function never uses; (→ CERT MSC13-C)
+- unused but named: `parse_eh_frame_pointer([[maybe_unused]] const elf& elf, ...)` (`dwarf.cpp:233`), `parse_compile_unit(..., [[maybe_unused]] const elf& obj, ...)` (`:439`), `execute_cfi_instruction(..., [[maybe_unused]] file_addr pc)` (`:689`), `read_frame_base_result(..., [[maybe_unused]] const registers& regs)` (`:933`), `create_inline_stack_frames(..., [[maybe_unused]] file_addr pc)` (`stack.cpp:142-144`), `handle_watchpoint_list(..., [[maybe_unused]] const std::vector<std::string>& args)` (`gsdb.cpp:594-595`); (→ CG F.9)
+- `[[maybe_unused]]` on functions that *are* used: `get_next_id` (`breakpoint_site.cpp:12`), `is_prefix` (`gsdb.cpp:61`), `parse_fde` (`dwarf.cpp:331`); (no guideline rule: the attribute says "may be unused", which is false here — see cppreference `[[maybe_unused]]`)
+- dead locals: `eh_hdr_start`, `text_section_start`, `version` (`dwarf.cpp:367-377`), `return_address_register` (`:296`), `len` (`:1559`), `[[maybe_unused]] auto pid = process_->pid();` (`target.hpp:180`), `elf_name` (`target.cpp:781`, computed and never read — no warning because `std::string` has a non-trivial destructor). (→ CERT MSC13-C; CERT MSC12-C)
 Why: `[[maybe_unused]]` is a promise to the compiler that hides real dead code from `-Wunused`; the guideline's answer is to leave the parameter unnamed (`file_addr /*pc*/`) or drop it from the signature.
 Fix: remove `id` from `set_hardware_breakpoint`/`set_watchpoint`; unname the six parameters; delete the dead locals and stale attributes (the `version` read must stay as `(void)cur.u8();`/`std::ignore = cur.u8();` because it advances the cursor).
 
 ### 13. `stack::up()`/`down()` state no preconditions — should
-Rules: CG I.5 "State preconditions (if any)"; CG I.6 "Prefer `Expects()` for expressing preconditions"; CG ES.104 "Don't underflow".
+Rules: CG I.5 “State preconditions (if any)”; CG I.6 “Prefer `Expects()` for expressing preconditions”; CG ES.104 “Don't underflow”.
 Where: `include/libgsdb/stack.hpp:47-48`; called from user input at `tools/gsdb.cpp:1077, 1080`.
 What: `void up() { ++current_frame_; }  void down() { --current_frame_; }` on a `std::size_t`, with `current_frame()` indexing `frames_[current_frame_]` unchecked.
 Why: these are driven directly by the `up`/`down` REPL commands, so the precondition (`current_frame_ + 1 < frames_.size()`, `current_frame_ > inline_height_`) is violated by ordinary user input; asserts would not help in release builds, and there is no comment stating the contract.
 Fix: check and throw `gsdb::error` (the CLI already prints those), or return `bool`; document the contract in the header either way.
 
 ### 14. Small API-shape issues — should
-Rules: CG C.9 "Minimize exposure of members" (inverse: a type used in the public interface must be nameable); CG F.49 "Don't return `const T`"; CG NL.25 "Don't use `void` as an argument type".
+Rules: CG F.49 “Don't return `const T`” (the `const path` return); CG NL.25 “Don't use `void` as an argument type” (`bool(void)`); CG I.13 “Do not pass an array as a single pointer” (pointer + length); CG F.24 “Use a `span<T>` or a `span_p<T>` to designate a half-open sequence” (pointer + length).
 Where:
-- `disassembler::instruction` is declared in the private section but returned from the public `disassemble()` (`include/libgsdb/disassembler.hpp:13-16, 24`): callers can only hold it via `auto`/`decltype`. → make the struct public.
-- `const std::filesystem::path file() const` (`include/libgsdb/breakpoint.hpp:123`) returns a `const` prvalue, which disables move-out. → `const std::filesystem::path&` (or `std::filesystem::path`).
-- `std::function<bool(void)>` (`include/libgsdb/breakpoint.hpp:72, 99`) → `std::function<bool()>`.
+- `disassembler::instruction` is declared in the private section but returned from the public `disassemble()` (`include/libgsdb/disassembler.hpp:13-16, 24`): callers can only hold it via `auto`/`decltype`. → make the struct public. (no guideline rule covers this directly; it is an API-usability point)
+- `const std::filesystem::path file() const` (`include/libgsdb/breakpoint.hpp:123`) returns a `const` prvalue, which disables move-out. → `const std::filesystem::path&` (or `std::filesystem::path`). (→ CG F.49)
+- `std::function<bool(void)>` (`include/libgsdb/breakpoint.hpp:72, 99`) → `std::function<bool()>`. (→ CG NL.25)
 - `pipe::write(std::byte* from, std::size_t bytes)` (`include/libgsdb/pipe.hpp:27`) takes a non-const pointer + length pair → `span<const std::byte>` (CG I.13 "Do not pass an array as a single pointer").
 Fix: move `struct instruction` above `public:` in `disassembler`; change `file()` to return `const std::filesystem::path&`; `std::function<bool()>`; `void write(span<const std::byte> data);` with `::write(fds_[write_fd], data.begin(), data.size())`.
 
 ### 15. `[[nodiscard]]` on factories and pure queries — consider
-Rules: Turner ("`[[nodiscard]]`"); `modernize-use-nodiscard` (109 hits); spirit of CG F.20.
+Rules: CG E.25 “If you can't throw exceptions, simulate RAII for resource management” (its note suggests `[[nodiscard]]` so callers test a result; the Core Guidelines have no rule dedicated to the attribute); cppreference: `[[nodiscard]]` attribute; clang-tidy: `modernize-use-nodiscard`.
 Where: factories `process::launch/attach` (`process.hpp:118-121`), `target::launch/attach` (`target.hpp:53-56`), `create_*` functions returning references that must be used to `enable()`, parsers `to_integral`/`to_float`/`parse_vector` (`parse.hpp:16, 52, 65, 93`), `disassemble`, `read_memory`, `find_functions`, `syscall_name_to_id`.
 Why: a discarded `process::launch(...)` result kills the child immediately (destructor semantics) — exactly the kind of silent mistake the attribute exists for. Do **not** apply it blanket-wise: `wait_on_signal()`'s result is legitimately ignored in many tests.
 Fix: add `[[nodiscard]]` to factories, converters, and non-mutating queries; skip functions with useful side effects.
@@ -263,7 +264,7 @@ Fix: add `[[nodiscard]]` to factories, converters, and non-mutating queries; ski
 ### 5.3 Classes
 
 ### 16. Members and objects that can be read before they are written — should
-Rules: CG ES.20 "Always initialize an object"; CG C.41 "A constructor should create a fully initialized object"; CG C.48 "Prefer default member initializers to member initializers in constructors for constant initializers"; CCS #19; EC++ #4.
+Rules: CG ES.20 “Always initialize an object”; CG C.41 “A constructor should create a fully initialized object”; CG C.48 “Prefer default member initializers to member initializers in constructors for constant initializers”; CCS Item 19 “Always initialize variables”; EC++ Item 4 “Make sure that objects are initialized before they're used”.
 Where:
 - `registers`: `registers() = default;` is public while `user data_; process* proc_; pid_t tid_;` have no initializers (`include/libgsdb/registers.hpp:19, 53-54, 62-63`) — a default-constructed `registers` (used as `stack_frame::regs` element type and via copies in `unwind`) has an indeterminate `proc_`;
 - `stop_reason() = default;` with `process_state reason; std::uint8_t info; pid_t tid;` uninitialized (`include/libgsdb/process.hpp:53, 76-80`); `thread_state::tid` (`:84`) is the only member without an initializer;
@@ -277,13 +278,13 @@ Why: default member initializers make the "empty" state a real, documented state
 Fix: `user data_{}; process* proc_ = nullptr; pid_t tid_ = 0;` (registers); `process_state reason = process_state::stopped; std::uint8_t info = 0; pid_t tid = 0;` (stop_reason); `const line_table* table_ = nullptr; const std::byte* pos_ = nullptr;`; `bool is_stmt = false;`; `bool is_enabled_ = false; std::byte saved_data_{}; bool is_hardware_ = false; bool is_internal_ = false;`.
 
 ### 17. Constructors that assign in the body instead of initializing — should
-Rules: CG C.49 "Prefer initialization to assignment in constructors"; CG C.45 "Don't define a default constructor that only initializes data members; use default member initializers instead"; CCS #48; EC++ #4.
+Rules: CG C.49 “Prefer initialization to assignment in constructors”; CCS Item 48 “In constructors, prefer initialization to assignment”; EC++ Item 4 “Make sure that objects are initialized before they're used”.
 Where: `src/breakpoint_site.cpp:28` (`id_ = is_internal_ ? -1 : get_next_id();`), `src/watchpoint.cpp:35` (`id_ = get_next_id();`), `src/breakpoint.cpp:18`, `src/elf.cpp:24-26` (`path_ = path; if ((fd_ = open(...)))`), `src/dwarf.cpp:959-961` (`compile_units_ = ...; cfi_ = ...;`), `src/dwarf.cpp:975` (`line_table_ = parse_line_table(*this);`).
 Why: assignment first default-constructs the member and then overwrites it; the pattern also prevents members from being `const` and hides the initialization order from readers. (The two `dwarf.cpp` cases pass `*this` to a parser before construction completes — legal because only already-initialized members are read, but worth one comment.)
 Fix: `: id_(is_internal ? -1 : get_next_id())`, `: path_(path)`, `: compile_units_(parse_compile_units(*this, parent)), cfi_(parse_call_frame_information(*this))` (with a comment on the partially-constructed `*this`), and so on.
 
 ### 18. `breakpoint` exposes protected data and duplicates the site-creation dance in every subclass — should
-Rules: CG C.133 "Avoid `protected` data"; CG ES.3 "Don't repeat yourself, avoid redundant code"; CG F.1 "'Package' meaningful operations as carefully named functions"; CCS #41.
+Rules: CG C.133 “Avoid `protected` data”; CG ES.3 “Don't repeat yourself, avoid redundant code”; CG F.1 “"Package" meaningful operations as carefully named functions”; CCS Item 41 “Make data members private, except in behaviorless aggregates (C-style structs)”.
 Where: `include/libgsdb/breakpoint.hpp:83-99` (protected `id_`, `target_`, `is_enabled_`, `is_hardware_`, `is_internal_`, `breakpoint_sites_`, `next_site_id_`, `on_hit_`); the same 6-line block appears four times: `src/breakpoint.cpp:31-38, 65-71, 78-84, 117-123`.
 What:
 ```cpp
@@ -297,29 +298,29 @@ Why: protected data couples every subclass to the base's representation (renamin
 Fix: make the data private and add `protected: breakpoint_site& add_site(virt_addr address);` that does the lookup/create/push/enable; `resolve()` implementations then become a loop over addresses.
 
 ### 19. Virtual `resolve()` is called from constructors — should
-Rules: CG C.82 "Don't call virtual functions in constructors and destructors"; CG C.50 "Use a factory function if you need 'virtual behavior' during initialization"; EC++ #9; CERT OOP50-CPP.
+Rules: CG C.82 “Don't call virtual functions in constructors and destructors”; CG C.50 “Use a factory function if you need "virtual behavior" during initialization”; EC++ Item 9 “Never call virtual functions during construction or destruction”; CERT OOP50-CPP “Do not invoke virtual functions from constructors or destructors”.
 Where: `include/libgsdb/breakpoint.hpp:113-115, 133-135, 149-151`.
 Why: it works today only because each call sits in the most-derived class's constructor body; a future subclass of `function_breakpoint`, or moving the call into `breakpoint`'s constructor, changes which override runs with no compiler diagnostic. The factories already exist (`target::create_*_breakpoint`), so this is the textbook C.50 case.
 Fix: remove the `resolve()` calls from the constructors and call `bp.resolve()` in `target::create_address_breakpoint`/`create_function_breakpoint`/`create_line_breakpoint` after `push()`; alternatively mark the three concrete classes `final` and keep a comment — the factory route is cleaner.
 
 ### 20. `dynamic_cast` chain to describe breakpoint kinds — should
-Rules: CG C.146 "Use `dynamic_cast` where class hierarchy navigation is unavoidable"; CG C.153 "Prefer virtual function to casting"; CCS #90 "Avoid type switching; prefer polymorphism".
+Rules: CG C.146 “Use `dynamic_cast` where class hierarchy navigation is unavoidable”; CG C.153 “Prefer virtual function to casting”; CCS Item 90 “Avoid type switching; prefer polymorphism”.
 Where: `tools/gsdb.cpp:461-471`.
 What: `if (auto func_bp = dynamic_cast<gsdb::function_breakpoint*>(&bp)) ... else if (dynamic_cast<gsdb::line_breakpoint*>) ... else if (dynamic_cast<gsdb::address_breakpoint*>)`.
 Why: adding a fourth breakpoint kind silently prints nothing here; the hierarchy already has one virtual (`resolve()`), so a second one costs nothing.
 Fix: `virtual std::string describe() const = 0;` on `breakpoint` (`"function = main"`, `"file = x.cpp, line = 17"`, `"address = 0x..."`), and the CLI prints `bp.describe()`.
 
 ### 21. Const-correctness holes — should
-Rules: CG Con.2 "By default, make member functions `const`"; CG Con.4 "Use `const` to define objects with values that do not change after construction"; CG C.9 "Minimize exposure of members"; EC++ #3, #28.
+Rules: CG Con.2 “By default, make member functions `const`”; CG Con.3 “By default, pass pointers and references to `const`s”; CG Con.4 “Use `const` to define objects with values that do not change after construction”; EC++ Item 3 “Use const whenever possible”; EC++ Item 28 “Avoid returning "handles" to object internals”.
 Where:
-- `stoppoint_collection::get_in_region(...) const` returns `std::vector<Stoppoint*>` — mutable access out of a const object (`include/libgsdb/stoppoint_collection.hpp:65, 219-229`);
-- `compile_unit` stores `dwarf* parent_` (non-const) so that `abbrev_table() const` can call the non-const `dwarf::get_abbrev_table()` and mutate `abbrev_tables_` (`include/libgsdb/dwarf.hpp:429, 436, 447-448, 507-508`; `src/dwarf.cpp:964-981`). The same file already solves the identical problem correctly with `mutable function_index_` + `index() const`;
-- `elf::data_` is `std::byte*` for a `PROT_READ` mapping (`include/libgsdb/elf.hpp:96`), which is why `get_section_name`/`get_string` need `reinterpret_cast<char*>` (`src/elf.cpp:87, 121`) instead of `const char*`, and why `section_map_`/`symbol_*_map_` hold non-const `Elf64_Shdr*`/`Elf64_Sym*` into read-only memory;
-- `process::write_memory` is non-const while `read_memory` is const (`process.hpp:186-190`) — defensible ("mutates the inferior"); state the rule in a comment so it does not look accidental.
+- `stoppoint_collection::get_in_region(...) const` returns `std::vector<Stoppoint*>` — mutable access out of a const object (`include/libgsdb/stoppoint_collection.hpp:65, 219-229`); (→ EC++ Item 28; CG Con.2)
+- `compile_unit` stores `dwarf* parent_` (non-const) so that `abbrev_table() const` can call the non-const `dwarf::get_abbrev_table()` and mutate `abbrev_tables_` (`include/libgsdb/dwarf.hpp:429, 436, 447-448, 507-508`; `src/dwarf.cpp:964-981`). The same file already solves the identical problem correctly with `mutable function_index_` + `index() const`; (→ CG Con.2; CG Con.3)
+- `elf::data_` is `std::byte*` for a `PROT_READ` mapping (`include/libgsdb/elf.hpp:96`), which is why `get_section_name`/`get_string` need `reinterpret_cast<char*>` (`src/elf.cpp:87, 121`) instead of `const char*`, and why `section_map_`/`symbol_*_map_` hold non-const `Elf64_Shdr*`/`Elf64_Sym*` into read-only memory; (→ CG Con.3; CG Con.4)
+- `process::write_memory` is non-const while `read_memory` is const (`process.hpp:186-190`) — defensible ("mutates the inferior"); state the rule in a comment so it does not look accidental. (→ CG Con.2)
 Fix: `std::vector<const Stoppoint*>` from the const overload (add a non-const overload if needed); `mutable abbrev_tables_` + `get_abbrev_table(...) const` + `const dwarf* parent_`; `const std::byte* data_` and `const Elf64_Shdr*`/`const Elf64_Sym*` in the maps.
 
 ### 22. `const_cast` const-overload idiom where the project already uses deducing `this` — should
-Rules: CG ES.50 "Don't cast away `const`"; CG ES.3 "Don't repeat yourself, avoid redundant code"; EMC++ (Meyers' own idiom, superseded in C++23).
+Rules: CG ES.50 “Don't cast away `const`”; CG ES.3 “Don't repeat yourself, avoid redundant code”; EC++ Item 3 “Use const whenever possible” (its section "Avoiding Duplication in const and Non-const Member Functions" is where the `const_cast` idiom comes from); cppreference: Explicit object member functions ("deducing `this`", C++23).
 Where: `include/libgsdb/stoppoint_collection.hpp:109, 126, 162, 177`; `src/process.cpp:199`. Precedent for the modern form: `include/libgsdb/target.hpp:81-86` (`auto& get_stack(this auto& self, ...)`) — and the commented-out old version at `target.hpp:71-79` shows the migration was already considered.
 Why: the `const_cast<T*>(this)->f()` trick is tolerated by the guidelines, but on a C++23 project that already uses explicit object parameters it is an inconsistency, and each site is five lines that can be one.
 Fix:
@@ -333,31 +334,31 @@ auto& get_by_id(this auto& self, typename Stoppoint::id_type id) {
 (same for `get_by_address`, `find_by_*`, and `process::get_registers`). Then delete the commented-out Meyers overload in `target.hpp`.
 
 ### 23. Comparison operators: incomplete sets and C++20 defaults — should
-Rules: CG C.86 "Make `==` symmetric with respect to operand types and `noexcept`"; CG C.161 "Use non-member functions for symmetric operators"; C++20 `operator<=>` (EMC++ addenda); `modernize-use-...`.
+Rules: CG C.86 “Make `==` symmetric with respect to operand types and `noexcept`”; CG C.161 “Use non-member functions for symmetric operators”; cppreference: Default comparisons (C++20; `!=` is rewritten from `==`, defaulted `<=>`).
 Where: `include/libgsdb/types.hpp:40-50` (`virt_addr` has `== != < > >=` but **no `<=`**), `:105-126` (`file_addr` hand-writes all six, four of them with `assert`), `include/libgsdb/dwarf.hpp:145-146, 406-407, 656-657` (`==`/`!=` pairs on three iterators; `range_list::iterator::operator==` takes its argument by value — a ~70-byte copy per comparison — while `line_table::iterator` takes `const&`), `:383-387` (`line_table::entry::operator==`).
 Why: asymmetric, incomplete operator sets are exactly what `<=>` removes; since C++20, `!=` is synthesized from `==` and the five ordering operators from `<=>`.
 Fix: `virt_addr`: `friend bool operator==(virt_addr, virt_addr) = default; friend auto operator<=>(virt_addr, virt_addr) = default;`. `file_addr`: keep the same-ELF assertion inside a hand-written `friend std::strong_ordering operator<=>(const file_addr&, const file_addr&)` plus a defaulted `==`. Iterators/`entry`: keep only `==` (drop `!=`), take `const iterator&`.
 
 ### 24. `eh_hdr::parent` is written but never read; `const` data member — should
-Rules: CG C.12 "Don't make data members `const` or references in a copyable or movable type"; NL.1 (dead code).
+Rules: CG C.12 “Don't make data members `const` or references in a copyable or movable type” (the `const` data member); CERT MSC13-C “Detect and remove unused values” (`parent` is written and never read).
 Where: `include/libgsdb/dwarf.hpp:47-61` (`const std::size_t count;` and `call_frame_information* parent;`), `:73` (`eh_hdr_.parent = this;`) — no other use of `.parent`/`->parent` in the tree.
 Why: the back-pointer is dead weight that also makes `call_frame_information` fragile (it would dangle if the object were ever made movable); the `const` member makes `eh_hdr` non-assignable for no benefit.
 Fix: delete `parent`; drop `const` from `count` (or keep `eh_hdr` a pure aggregate).
 
 ### 25. Anonymous union with an external discriminator — consider
-Rules: CG C.181 "Avoid 'naked' `union`s"; CG C.182 "Use anonymous `union`s to implement tagged unions"; CG P.4.
+Rules: CG C.181 “Avoid "naked" `union`s”; CG C.182 “Use anonymous `union`s to implement tagged unions”; CG P.4 “Ideally, a program should be statically type safe”.
 Where: `include/libgsdb/process.hpp:43-50` (`bool entry;` + `union { std::array<std::uint64_t, 6> args; std::int64_t ret; };`), accessed at `src/process.cpp:893, 905` and `tools/gsdb.cpp:280-284`.
 Why: nothing stops reading `ret` on an entry stop; `std::variant<std::array<std::uint64_t, 6>, std::int64_t>` (or two `std::optional`s) makes the discriminant intrinsic and the CLI code a `std::visit`.
 Fix: `std::variant<syscall_entry, syscall_exit>` with two tiny structs, or keep the union but wrap it behind `args()`/`ret()` accessors that assert on `entry`.
 
 ### 26. `process` carries several responsibilities and exposes implementation steps publicly — consider
-Rules: CG F.2 "A function should perform a single logical operation" (class-level analogue: CCS #5 "Give one entity one cohesive responsibility"); CG C.9 "Minimize exposure of members".
+Rules: CG F.2 “A function should perform a single logical operation”; CCS Item 5 “Give one entity one cohesive responsibility” (the class-level form of F.2); CG C.9 “Minimize exposure of members”.
 Where: `include/libgsdb/process.hpp:116-319` — process control, per-thread state, memory access, register I/O, hardware debug-register slot allocation (`set_hardware_stoppoint` and the DR7 encoders in `process.cpp:64-116`), syscall catch policy, auxv parsing; and `handle_signal`, `cleanup_exited_threads`, `report_thread_lifecycle_event`, `stop_running_threads` are public (`:280-288`) although only `process` itself calls them.
 Why: not wrong, but the class is the coupling point for the whole library (every header ends up including `process.hpp`, see #50). Moving the DR7 slot bookkeeping into a small `hardware_debug_registers` helper and the auxv reader into a free function would shrink the surface, and the four internal steps can be private.
 Fix: private the four internals now (cheap); consider the extraction when the multi-thread work settles.
 
 ### 27. `std::unique_ptr<T>(new T(...))` for private-constructor factories — consider (note only)
-Rules: CG C.150 "Use `make_unique()` to construct objects owned by `unique_ptr`s"; EMC++ #21; ToTW #134 (the private-constructor exception).
+Rules: CG C.150 “Use `make_unique()` to construct objects owned by `unique_ptr`s”; EMC++ Item 21 “Prefer std::make_unique and std::make_shared to direct use of new”; ToTW #134 “make_unique and private Constructors”.
 Where: `src/target.cpp:745-758`; `src/process.cpp:642-644, 653-655, 868-870`.
 Why: `make_unique` cannot reach a private constructor; the guidelines accept `new` inside the befriended factory. The only cost is that a throw between `new` and the `unique_ptr` construction would leak — impossible here since the `unique_ptr` is constructed in the same full-expression.
 Fix: none required. If you want `make_unique` everywhere, the usual trick is a private `struct private_tag {}` constructor parameter that only the factory can name.
@@ -365,16 +366,16 @@ Fix: none required. If you want `make_unique` everywhere, the usual trick is a p
 ### 5.4 Expressions & statements
 
 ### 28. Declare-then-assign locals and assignment inside conditions — should
-Rules: CG ES.20 "Always initialize an object"; CG ES.22 "Don't declare a variable until you have a value to initialize it with"; CG ES.10 "Declare one name (only) per declaration"; CCS #18-#19.
+Rules: CG ES.20 “Always initialize an object”; CG ES.22 “Don't declare a variable until you have a value to initialize it with”; CG ES.6 “Declare names in for-statement initializers and conditions to limit scope”; CG ES.10 “Declare one name (only) per declaration”; CG ES.28 “Use lambdas for complex initialization, especially of `const` variables”; CCS Item 18 “Declare variables as locally as possible”; CCS Item 19 “Always initialize variables”.
 Where:
-- assignment inside the condition: `src/elf.cpp:26` (`if ((fd_ = open(...)) < 0)`), `:42` (`if ((ret = mmap(...)) == MAP_FAILED)`), `src/pipe.cpp:45-49` (`int chars_read; if ((chars_read = ::read(...)) < 0)`), `src/process.cpp:430-434` (`pid_t tid; if ((tid = waitpid(...)) < 0)`), `:493-494` (`pid_t pid; if ((pid = fork()) < 0)`);
-- declared without a value: `int status;` (`process.cpp:154`), `int wait_status;` (`:177, :320, :379`), `std::uint64_t word;` (`:740`), `std::uint64_t id, value;` (`:984`, also two names in one declaration), `struct stat stats; void* ret;` (`elf.cpp:30, 36`), `std::size_t size;` / `std::size_t offset;` / `std::uint64_t idx;` (`dwarf.cpp:1123, 1147, 1646`), `gsdb::stoppoint_mode mode; mode = ...` (`gsdb.cpp:640-643`);
-- `siginfo_t info;` (`process.cpp:875`) is an out-parameter for `ptrace` — fine, but `siginfo_t info{};` costs nothing.
+- assignment inside the condition: `src/elf.cpp:26` (`if ((fd_ = open(...)) < 0)`), `:42` (`if ((ret = mmap(...)) == MAP_FAILED)`), `src/pipe.cpp:45-49` (`int chars_read; if ((chars_read = ::read(...)) < 0)`), `src/process.cpp:430-434` (`pid_t tid; if ((tid = waitpid(...)) < 0)`), `:493-494` (`pid_t pid; if ((pid = fork()) < 0)`); (→ CG ES.22; CG ES.6; CCS Item 18)
+- declared without a value: `int status;` (`process.cpp:154`), `int wait_status;` (`:177, :320, :379`), `std::uint64_t word;` (`:740`), `std::uint64_t id, value;` (`:984`, also two names in one declaration), `struct stat stats; void* ret;` (`elf.cpp:30, 36`), `std::size_t size;` / `std::size_t offset;` / `std::uint64_t idx;` (`dwarf.cpp:1123, 1147, 1646`), `gsdb::stoppoint_mode mode; mode = ...` (`gsdb.cpp:640-643`); (→ CG ES.20; CG ES.22; CG ES.10; CG ES.28)
+- `siginfo_t info;` (`process.cpp:875`) is an out-parameter for `ptrace` — fine, but `siginfo_t info{};` costs nothing. (→ CG ES.20)
 Why: `pid_t pid = fork(); if (pid < 0)` reads in one pass and lets the variable be `const`; the `switch`-then-assign cases (`size`, `offset`, `idx`) are the ES.28 pattern (initialize via a lambda or a small helper returning the value).
 Fix: as above; `const auto [id, value] = read_pair(auxv);` or two declarations for `get_auxv`.
 
 ### 29. Magic constants — should
-Rules: CG ES.45 "Avoid 'magic constants'; use symbolic constants"; CCS #17; EC++ #2.
+Rules: CG ES.45 “Avoid "magic constants"; use symbolic constants”; CCS Item 17 “Avoid magic numbers”; CG Con.5 “Use `constexpr` for values that can be computed at compile time” (the `inline constexpr` replacements).
 Where (the ones that recur or encode hardware/ABI facts):
 - page size `0x1000` / `0xfff` (`src/process.cpp:719-720`) → `constexpr std::uint64_t page_size = 4096;`
 - x86-64 max instruction length `15` (`src/disassembler.cpp:23`) → `constexpr std::size_t max_instruction_length = 15;`
@@ -387,81 +388,81 @@ Why: each repeated literal is a fact about x86-64 or DWARF that a reader should 
 Fix: add `include/libgsdb/detail/x64.hpp` with `inline constexpr` constants (`page_size = 4096`, `max_instruction_length = 15`, `debug_register_count = 8`, `syscall_arg_count = 6`) and three `constexpr` DR7 helpers (`dr7_enable_bit(slot)`, `dr7_rw_shift(slot)`, `dr7_len_shift(slot)`); replace the literals at the sites above. In the CLI, `constexpr std::size_t default_read_bytes = 32, bytes_per_row = 16;` at file scope; `sizeof("Hello, gsdb!")` in the test.
 
 ### 30. Signed/unsigned mixing centred on `virt_addr` arithmetic — should
-Rules: CG ES.100 "Don't mix signed and unsigned arithmetic"; CG ES.102 "Use signed types for arithmetic"; CG ES.106 "Don't try to avoid negative values by using `unsigned`"; CG ES.104 "Don't underflow"; CG ES.46 "Avoid lossy (narrowing, truncating) arithmetic conversions"; `cppcoreguidelines-narrowing-conversions` (33 hits).
+Rules: CG ES.100 “Don't mix signed and unsigned arithmetic”; CG ES.102 “Use signed types for arithmetic”; CG ES.106 “Don't try to avoid negative values by using `unsigned`”; CG ES.104 “Don't underflow”; CG ES.46 “Avoid lossy (narrowing, truncating) arithmetic conversions”.
 Where:
-- `virt_addr::operator+/-/+=/-=(std::int64_t)` and `file_addr` likewise (`include/libgsdb/types.hpp:26-39, 90-103`) while `addr_` is `std::uint64_t` and every caller passes `std::size_t`/`std::uint64_t` (`process.cpp:724, 744, 754, 765, 770`; `dwarf.cpp:710, 738-766, 1248, 1278-1279`; `elf.cpp:143-144`) — 20 of the 33 narrowing warnings come from this one signature;
-- `int chars_read` ← `ssize_t` (`pipe.cpp:45, 49`); `auto n_bytes = 32;` (`int`) later assigned a `std::size_t` (`gsdb.cpp:701-705`); `std::size_t high = count - 1;` underflows for an empty table (`dwarf.cpp:1724`); `for (int i = 0; i < 8; ++i)` indexing `u_debugreg[i]` (`process.cpp:595-606`).
+- `virt_addr::operator+/-/+=/-=(std::int64_t)` and `file_addr` likewise (`include/libgsdb/types.hpp:26-39, 90-103`) while `addr_` is `std::uint64_t` and every caller passes `std::size_t`/`std::uint64_t` (`process.cpp:724, 744, 754, 765, 770`; `dwarf.cpp:710, 738-766, 1248, 1278-1279`; `elf.cpp:143-144`) — 20 of the 33 narrowing warnings come from this one signature; (→ CG ES.100; CG ES.102; CG ES.46)
+- `int chars_read` ← `ssize_t` (`pipe.cpp:45, 49`); `auto n_bytes = 32;` (`int`) later assigned a `std::size_t` (`gsdb.cpp:701-705`); `std::size_t high = count - 1;` underflows for an empty table (`dwarf.cpp:1724`); `for (int i = 0; i < 8; ++i)` indexing `u_debugreg[i]` (`process.cpp:595-606`). (→ CG ES.46; CG ES.104; CG ES.100)
 Why: the address types exist to make address arithmetic safe; taking a signed offset and adding it to an unsigned value converts at every call site. Choose one integer model and make it visible.
 Fix: give `virt_addr`/`file_addr` two overloads (`std::uint64_t` for sizes/forward offsets, `std::ptrdiff_t` for deltas) or a single `std::int64_t` with explicit `static_cast`/`gsl::narrow` at the boundaries; `ssize_t chars_read`; `std::size_t n_bytes = 32;`; guard `count == 0`. Turn on `-Wconversion -Wsign-conversion` (#61) so the compiler keeps this honest.
 
 ### 31. Bit manipulation performed on signed `int` — should
-Rules: CG ES.101 "Use unsigned types for bit manipulation"; CG ES.46; CG ES.41 "If in doubt about operator precedence, parenthesize" (17 `math-missing-parentheses` hits, all in these expressions).
+Rules: CG ES.101 “Use unsigned types for bit manipulation”; CG ES.46 “Avoid lossy (narrowing, truncating) arithmetic conversions”; CG ES.41 “If in doubt about operator precedence, parenthesize”.
 Where: `src/process.cpp:808-813` (`auto enable_bit = (1 << (free_space * 2));` … `auto clear_mask = (0b11 << (free_space * 2)) | (0b1111 << (free_space * 4 + 16));` — all `int`), `:843` (same for `clear_hardware_stoppoint`), `src/breakpoint_site.cpp:82, 108` (`data & ~0xff` — `~0xff` is a negative `int` sign-extended to `std::uint64_t`).
 Why: for slot 3, `0b1111 << 28` produces a negative 32-bit `int` (well-defined only since C++20, and only by accident of two's complement); `~clear_mask` is then a *positive* `int` that, converted to `std::uint64_t`, clears every bit above bit 27 of DR7 — correct today only because slot 3's fields are the topmost. The code works, but for the wrong reasons and the reader cannot tell.
 Fix: do all DR7 arithmetic in `std::uint64_t`: `constexpr std::uint64_t one = 1; auto enable_bit = one << (slot * 2);` … `auto clear_mask = (std::uint64_t{0b11} << (slot * 2)) | (std::uint64_t{0b1111} << (slot * 4 + 16));`; `data & ~std::uint64_t{0xff}`. Combine with the named constants from #29.
 
 ### 32. Casts: avoidable `reinterpret_cast`s, remote pointers typed as local pointers, `(void)` discards — should
-Rules: CG ES.48 "Avoid casts"; CG ES.49 "If you must use a cast, use a named cast"; CG P.4 "Ideally, a program should be statically type safe"; CG C.90 "Rely on constructors and assignment operators, not `memset` and `memcpy`"; CG SL.con.4 "don't use `memset` or `memcpy` for arguments that are not trivially-copyable"; CCS #91-#92.
+Rules: CG ES.48 “Avoid casts”; CG ES.49 “If you must use a cast, use a named cast”; CG P.4 “Ideally, a program should be statically type safe”; CG C.90 “Rely on constructors and assignment operators, not `memset` and `memcpy`”; CG SL.con.4 “don't use `memset` or `memcpy` for arguments that are not trivially-copyable”; CCS Item 91 “Rely on types, not on representations”; CCS Item 92 “Avoid using reinterpret_cast”; cppreference: `std::ignore`.
 Where (24 `reinterpret_cast`s; the boundary ones in `bit.hpp`, `pipe.cpp`, `elf.cpp:48`, `process.cpp:42, 545, 722, 746, 987` are legitimate byte/OS-API conversions and are fine as long as they stay concentrated):
-- remote addresses stored in *local* pointer types: `debug->r_map` (`link_map*`) and `entry.l_name` (`char*`) are addresses in the inferior, converted with `reinterpret_cast<std::uint64_t>(entry_ptr)` (`src/target.cpp:870, 877`). A `link_map*` that must never be dereferenced is a type lie; read the struct into a local POD with `std::uint64_t` fields (or `virt_addr` members) instead;
-- `reinterpret_cast<std::byte*>(data_.u_debugreg + i)` followed by `from_bytes<std::uint64_t>` to obtain a value that is already a `std::uint64_t` (`src/registers.cpp:90-91`) → `data_.u_debugreg[i]`;
-- `std::copy(bytes..., reinterpret_cast<std::byte*>(vec.data()))` to fill vectors of trivially-copyable structs (`src/elf.cpp:78-80, 170-172`; `src/target.cpp:813-815`) → `std::memcpy(vec.data(), src, n)` or a `copy_pods_from_bytes<T>(span, std::vector<T>&)` helper with a `static_assert(std::is_trivially_copyable_v<T>)`;
-- `(void)parse_eh_frame_pointer_with_base(...)`, `(void)cur.u32();` (`src/dwarf.cpp:314, 380, 555`) → `std::ignore = ...;` (C++23-blessed) or `[[maybe_unused]] auto`;
-- `from_bytes<To>` has no `static_assert(std::is_trivially_copyable_v<To>)` (`include/libgsdb/bit.hpp:21-26`), so `read_memory_as<T>` silently accepts any `T` (see #41).
+- remote addresses stored in *local* pointer types: `debug->r_map` (`link_map*`) and `entry.l_name` (`char*`) are addresses in the inferior, converted with `reinterpret_cast<std::uint64_t>(entry_ptr)` (`src/target.cpp:870, 877`). A `link_map*` that must never be dereferenced is a type lie; read the struct into a local POD with `std::uint64_t` fields (or `virt_addr` members) instead; (→ CG P.4; CCS Item 91)
+- `reinterpret_cast<std::byte*>(data_.u_debugreg + i)` followed by `from_bytes<std::uint64_t>` to obtain a value that is already a `std::uint64_t` (`src/registers.cpp:90-91`) → `data_.u_debugreg[i]`; (→ CG ES.48; CCS Item 92)
+- `std::copy(bytes..., reinterpret_cast<std::byte*>(vec.data()))` to fill vectors of trivially-copyable structs (`src/elf.cpp:78-80, 170-172`; `src/target.cpp:813-815`) → `std::memcpy(vec.data(), src, n)` or a `copy_pods_from_bytes<T>(span, std::vector<T>&)` helper with a `static_assert(std::is_trivially_copyable_v<T>)`; (→ CG ES.48; CG C.90; CG SL.con.4)
+- `(void)parse_eh_frame_pointer_with_base(...)`, `(void)cur.u32();` (`src/dwarf.cpp:314, 380, 555`) → `std::ignore = ...;` (C++23-blessed) or `[[maybe_unused]] auto`; (→ CG ES.48, which says "Use `std::ignore =` to ignore `[[nodiscard]]` values"; cppreference `std::ignore`)
+- `from_bytes<To>` has no `static_assert(std::is_trivially_copyable_v<To>)` (`include/libgsdb/bit.hpp:21-26`), so `read_memory_as<T>` silently accepts any `T` (see #41). (→ CG SL.con.4; CG T.10)
 Why: keeping all type punning behind two or three named helpers (`from_bytes`, `as_bytes`, `to_string_view`) is the right structure — the project mostly does this — so the goal is to route the stragglers through them and to stop representing remote memory with local pointer types.
 Fix: (a) in `target.cpp`, read the rendezvous/link-map records into local structs whose pointer fields are `std::uint64_t` (`struct remote_link_map { std::uint64_t l_addr, l_name, l_ld, l_next, l_prev; }` via `read_memory_as`), so no `reinterpret_cast` is needed; (b) `data_.u_debugreg[i]` directly in `registers::flush`; (c) add `template <class T> requires std::is_trivially_copyable_v<T> std::vector<T> vector_from_bytes(span<const std::byte>)` to `bit.hpp` and use it in `elf.cpp`/`target.cpp`; (d) `std::ignore = expr;` for the three discarded values; (e) the `static_assert` in `from_bytes` (see #41).
 
 ### 33. Variables that shadow type names (and one parameter) — should
-Rules: CG ES.12 "Do not reuse names in nested scopes"; CG NL.19 "Avoid names that are easily misread"; `-Wshadow`.
+Rules: CG ES.12 “Do not reuse names in nested scopes”; CG NL.19 “Avoid names that are easily misread”; cppbestpractices, ch. 2 "Use the Tools Available", § Compilers → GCC / Clang (recommended warning flags) (recommends `-Wshadow`).
 Where: `children_range(die die)` (`include/libgsdb/dwarf.hpp:610`); `parse_compile_unit(gsdb::dwarf& dwarf, ...)` / `parse_compile_units(gsdb::dwarf& dwarf, ...)` (`src/dwarf.cpp:438-440, 464-465`); `auto elf = ...` (`dwarf.cpp:1084, 1262, 1504, 1714`); `auto& dwarf = ...` (`src/breakpoint.cpp:101`, `src/stack.cpp:83`, `src/target.cpp:582`); `std::vector<gsdb::die> stack;` (`dwarf.cpp:1667`) and `auto stack = inline_stack_at_pc();` **inside `class stack`'s own member function** (`src/stack.cpp:28`); `auto [name, entry] = pair;` shadowing the `name` parameter (`dwarf.cpp:1376`); `auto pipe = popen(...)` under `using namespace gsdb;` shadows `gsdb::pipe` (`test/tests.cpp:33, 62`).
 Why: `elf`, `dwarf`, `stack`, `pipe`, `die` are the project's five most important type names; using them as variable names makes `dwarf.cfi()` vs `dwarf::cfi()` a matter of context and blocks adding a static member call later.
 Fix: `obj`/`elf_file`, `dw`/`debug_info`, `frames`/`inline_stack`, `proc_pipe`, `parent_die`; enable `-Wshadow` (#61).
 
 ### 34. Commented-out code and dead statements — should
-Rules: CG NL.1 "Don't say in comments what can be clearly stated in code"; CCS #0 (consistency); LLVM ("don't check in commented-out code").
+Rules: LLVM Coding Standards, “Comment Formatting ("Commenting out large blocks of code is discouraged")” (commented-out code; the Core Guidelines have no rule on it); CERT MSC12-C “Detect and remove code that has no effect or is never executed” (dead statements such as the unused `pid` local); CG NL.3 “Keep comments crisp” (the comment that names another project's namespace).
 Where: `include/libgsdb/target.hpp:71-79` (old Meyers const-overload), `:180` (`[[maybe_unused]] auto pid`), `:197` (`// stack stack_;`); `include/libgsdb/process.hpp:295`; `src/process.cpp:971` (`// resume();`); `src/target.cpp:666` (commented condition inside a live `if`), `:771-784` (`elf_name` never used + commented `__cxa_demangle`); `tools/gsdb.cpp:205-208`, `:226-238` (a complete previous implementation kept in a comment), `:1044`; `src/breakpoint_site.cpp:41`; `src/dwarf.cpp:1930-1932` (comment references `sdb::`, a different project's namespace).
 Why: git already remembers the old versions; kept alternatives make readers wonder which one is current.
 Fix: delete; where a design alternative is worth recording, one line "previously X; replaced by deducing `this`" is enough.
 
 ### 35. Two spellings of the logical operators in the same files — should
-Rules: CG NL.8 "Use a consistent naming style" (consistency generally); `readability-operators-representation`.
+Rules: CCS Item 0 “Don't sweat the small stuff. (Or: Know what not to standardize.)” (it leaves choices like this to the project but asks that they be applied consistently; the Core Guidelines have no rule on operator spelling); cppreference: Alternative operator representations (`and`, `or`, `not`); clang-tidy: `readability-operators-representation`.
 Where: `and`/`or`/`not` vs `&&`/`||`/`!` — `src/dwarf.cpp` 76 vs 20, `tools/gsdb.cpp` 11 vs 16, `src/target.cpp` 17 vs 12, `src/elf.cpp` 11 vs 4, `test/tests.cpp` 26 vs 8, `include/libgsdb/stoppoint_collection.hpp` 2 vs 5 (e.g. `gsdb.cpp:170` `&&` and `:371` `or` in adjacent functions).
 Why: either form is fine; alternating within a file is the only thing the guidelines object to.
 Fix: pick one (the codebase leans `and`/`or`), add `readability-operators-representation` with `BinaryOperators: 'and;or;not'` to `.clang-tidy`, and let `--fix` normalize.
 
 ### 36. Loops: index loops over parallel arrays, `for` without an increment, repeated calls in a `do-while` condition — consider
-Rules: CG ES.71 "Prefer a range-`for`-statement to a `for`-statement when there is a choice"; CG ES.73 "Prefer a `while`-statement to a `for`-statement when there is no obvious loop variable"; CG ES.75 "Avoid `do`-statements"; CG ES.3.
+Rules: CG ES.71 “Prefer a range-`for`-statement to a `for`-statement when there is a choice”; CG ES.73 “Prefer a `while`-statement to a `for`-statement when there is no obvious loop variable”; CG ES.75 “Avoid `do`-statements”; CG ES.3 “Don't repeat yourself, avoid redundant code”; CG P.9 “Don't waste time or space” (the repeated `line_entry_at_pc` calls).
 Where: `src/process.cpp:904-907` (`for (auto i = 0; i < 6; ++i) sys_info.args[i] = regs.read_by_id_as<...>(arg_regs[i]);` → `std::ranges::transform(arg_regs, sys_info.args.begin(), ...)`); `src/target.cpp:714-715` (`for (auto frames = stack.frames().size(); stack.frames().size() >= frames;)` → `const auto frames = ...; while (stack.frames().size() >= frames)`); `do`-`while` ×8 (`dwarf.cpp:88, 115, 413, 421, 1487`; `target.cpp:558, 649`; `tests.cpp:918`) — the LEB128 and abbreviation-table ones are idiomatic decoders and can stay; the two stepping loops in `target.cpp:570-575, 681-683` call `line_entry_at_pc(tid)` three times per iteration (each call re-walks the line program) → hoist into `auto line = line_entry_at_pc(tid);` once per iteration.
 Fix: `std::ranges::transform(arg_regs, sys_info.args.begin(), [&](auto r) { return regs.read_by_id_as<std::uint64_t>(r); });`; `const auto frame_count = stack.frames().size(); while (stack.frames().size() >= frame_count) { ... }`; in `step_in`/`step_over` factor the loop condition into a small `bool at_new_line(line_table::iterator line, line_table::iterator orig)` helper evaluated once per iteration; leave the LEB128 `do`-loops as they are.
 
 ### 37. Readability nits, clustered — consider
-Rules: CG ES.78 "Don't rely on implicit fallthrough in `switch` statements"; CG ES.87 "Don't add redundant `==` or `!=` to conditions" / ToTW #141 (pick one bool-conversion style); CG ES.56 "Write `std::move()` only when you need to explicitly move an object to another scope" (and its inverse); `readability-else-after-return`.
-Where: `case X: gsdb::error::send(...);` followed directly by the next `case` label with no `break` (`src/dwarf.cpp:1987-1995, 2085-2090`) — correct because `send` is `[[noreturn]]`, but it looks like fallthrough; end each with `std::unreachable();` or a `// [[noreturn]]` comment. Pointer-to-bool style mixes `if (!cu)` / `if (elf)` (28 sites) with `if (p != nullptr)` (`gsdb.cpp:1103`, `breakpoint.cpp:...`) — choose one. `std::string func_name = "";` (`target.cpp:772`), `std::string_view sep = "";` (`gsdb.cpp:200`) — redundant initializers. `return pieces_result{pieces};` copies a local vector into the return value (`dwarf.cpp:2146`) → `std::move(pieces)`. `else` after `return` ×9 (`dwarf.cpp:1223, 1237, 1243, 1330`, `process.cpp:470, 956`, `gsdb.cpp:174, 411`) — LLVM early-exit style; optional.
+Rules: CG ES.78 “Don't rely on implicit fallthrough in `switch` statements”; cppreference: `std::unreachable` (C++23); CG ES.87 “Don't add redundant `==` or `!=` to conditions”; ToTW #141 “Beware Implicit Conversions to bool”; CG ES.56 “Write `std::move()` only when you need to explicitly move an object to another scope”; LLVM Coding Standards, “Don't use else after a return”.
+Where: `case X: gsdb::error::send(...);` followed directly by the next `case` label with no `break` (`src/dwarf.cpp:1987-1995, 2085-2090`) — correct because `send` is `[[noreturn]]`, but it looks like fallthrough; end each with `std::unreachable();` or a `// [[noreturn]]` comment. (→ CG ES.78) Pointer-to-bool style mixes `if (!cu)` / `if (elf)` (28 sites) with `if (p != nullptr)` (`gsdb.cpp:1103`, `breakpoint.cpp:...`) — choose one. (→ CG ES.87; ToTW #141) `std::string func_name = "";` (`target.cpp:772`), `std::string_view sep = "";` (`gsdb.cpp:200`) — redundant initializers. (no guideline rule; clang-tidy `readability-redundant-string-init`) `return pieces_result{pieces};` copies a local vector into the return value (`dwarf.cpp:2146`) → `std::move(pieces)`. (→ CG ES.56) `else` after `return` ×9 (`dwarf.cpp:1223, 1237, 1243, 1330`, `process.cpp:470, 956`, `gsdb.cpp:174, 411`) — LLVM early-exit style; optional. (→ LLVM "Don't use else after a return")
 Fix: after each `error::send(...)` inside a `switch`, add `std::unreachable();` (C++23) so the intent is explicit and `-Wimplicit-fallthrough` stays quiet; adopt `if (!p)` for pointers everywhere (matches the majority) and add `readability-implicit-bool-conversion.AllowPointerConditions: true` to `.clang-tidy`; drop the two `= ""` initializers; `return pieces_result{std::move(pieces)};`; let `readability-else-after-return --fix` handle the nine `else`s if you want the LLVM style.
 
 ### 5.5 Enums, constants, immutability
 
 ### 38. Enum arithmetic for debug registers repeated at six sites — should
-Rules: CG Enum.4 "Define operations on enumerations for safe and simple use"; CG ES.3.
+Rules: CG Enum.4 “Define operations on enumerations for safe and simple use”; CG ES.3 “Don't repeat yourself, avoid redundant code”; cppreference: `std::to_underlying` (C++23).
 Where: `static_cast<register_id>(static_cast<int>(register_id::dr0) + i)` and variants — `src/process.cpp:595-597, 800-802, 827-828, 836-838, 850-851, 944-947`.
 Why: the same two casts appear six times; a named operation documents the "DR0..DR7 are contiguous in the enum" assumption once and lets `-Wswitch` reasoning stay intact elsewhere.
 Fix: in `register_info.hpp`: `constexpr register_id debug_register(int index) { return static_cast<register_id>(std::to_underlying(register_id::dr0) + index); }` (C++23 `std::to_underlying`), plus `static_assert(std::to_underlying(register_id::dr7) - std::to_underlying(register_id::dr0) == 7)`.
 
 ### 39. X-macro helper macros leak out of the `.inc` file and are unprefixed — should
-Rules: CG ES.33 "If you must use macros, give them unique names"; CG ES.31 "Don't use macros for constants or 'functions'" (the X-macro itself is the documented exception); CG ES.32.
+Rules: CG ES.33 “If you must use macros, give them unique names”; CG ES.31 “Don't use macros for constants or "functions"” (the X-macro itself is the documented exception); CG ES.32 “Use `ALL_CAPS` for all macro names”.
 Where: `include/libgsdb/detail/registers.inc:6-24, 86-89, 131` define `GPR_OFFSET`, `DEFINE_GPR_64/32/16/8H/8L`, `FPR_OFFSET`, `FPR_SIZE`, `DEFINE_FPR`, `DR_OFFSET`; the includer (`register_info.hpp:15-17, 51-54`) `#undef`s only `DEFINE_REGISTER`, so the ten helpers stay defined in every translation unit that includes `register_info.hpp` (i.e. all of them).
 Why: an unprefixed `DEFINE_FPR` or `DR_OFFSET` in a public header is a collision waiting for a third-party header; the fix is mechanical.
 Fix: `#undef` every helper at the bottom of `registers.inc`, and prefix them `GSDB_` (or move the helper definitions into the includer next to `DEFINE_REGISTER`).
 
 ### 40. Enum and constant hygiene — consider
-Rules: CG Enum.3 "Prefer class enums over 'plain' enums"; CG Enum.6 "Avoid unnamed enumerations"; CG ES.27 "Use `std::array` or `stack_array` for arrays on the stack"; CG Con.5 "Use `constexpr` for values that can be computed at compile time"; EMC++ #10, #15.
-Where: `enum mode { none, some, all };` nested in `syscall_catch_policy` (`include/libgsdb/process.hpp:94`) — already used as `mode::none` everywhere, so `enum class` is a one-word change; `include/libgsdb/detail/dwarf.h` (571 lines of unnamed `enum { DW_TAG_... }` constants, 25+31 tidy hits) — they mirror the DWARF spec's integer constants and are compared against raw `std::uint64_t` fields (`abbrev.tag`, `attr.form`); typing them (`enum class dw_tag : std::uint16_t`) would also type `abbrev::tag`/`attr_spec::form` (P.4), a larger but valuable refactor; `inline constexpr const register_info g_register_infos[]` (`register_info.hpp:50`) → `inline constexpr auto g_register_infos = std::to_array<register_info>({...})` gives `.size()` and algorithms for free (the redundant `const` after `constexpr` can go either way); `const auto vdso_name = "linux-vdso.so.1";` inside a function (`src/target.cpp:888`) → `constexpr std::string_view vdso_name` at namespace scope.
+Rules: CG Enum.3 “Prefer class enums over "plain" enums”; EMC++ Item 10 “Prefer scoped enums to unscoped enums”; CG Enum.6 “Avoid unnamed enumerations”; CG P.4 “Ideally, a program should be statically type safe”; CG ES.27 “Use `std::array` or `stack_array` for arrays on the stack”; CG SL.con.1 “Prefer using STL `array` or `vector` instead of a C array”; CG Con.5 “Use `constexpr` for values that can be computed at compile time”; EMC++ Item 15 “Use constexpr whenever possible”.
+Where: `enum mode { none, some, all };` nested in `syscall_catch_policy` (`include/libgsdb/process.hpp:94`) — already used as `mode::none` everywhere, so `enum class` is a one-word change (→ CG Enum.3; EMC++ Item 10); `include/libgsdb/detail/dwarf.h` (571 lines of unnamed `enum { DW_TAG_... }` constants, 25+31 tidy hits) — they mirror the DWARF spec's integer constants and are compared against raw `std::uint64_t` fields (`abbrev.tag`, `attr.form`); typing them (`enum class dw_tag : std::uint16_t`) would also type `abbrev::tag`/`attr_spec::form` (P.4), a larger but valuable refactor (→ CG Enum.6; CG P.4); `inline constexpr const register_info g_register_infos[]` (`register_info.hpp:50`) → `inline constexpr auto g_register_infos = std::to_array<register_info>({...})` gives `.size()` and algorithms for free (the redundant `const` after `constexpr` can go either way) (→ CG ES.27; CG SL.con.1); `const auto vdso_name = "linux-vdso.so.1";` inside a function (`src/target.cpp:888`) → `constexpr std::string_view vdso_name` at namespace scope. (→ CG Con.5; EMC++ Item 15)
 Fix: `enum class mode { none, some, all };` (no call-site changes needed); `inline constexpr auto g_register_infos = std::to_array<register_info>({ ... })` with the X-macro body unchanged inside the braces; move `vdso_name` into the file's unnamed namespace as `constexpr std::string_view`. For `detail/dwarf.h`, if you take it on: one `enum class dw_tag : std::uint16_t`, `dw_at`, `dw_form`, `dw_op : std::uint8_t`, then change `abbrev::tag`/`attr_spec::attr`/`attr_spec::form` to those types and add `std::to_underlying` at the two decode sites — do it per enum, not all at once.
 
 ### 5.6 Templates & generic code
 
 ### 41. Unconstrained templates; type-punning helpers without `static_assert`s — should
-Rules: CG T.10 "Specify concepts for all template arguments"; CG T.11 "Whenever possible use standard concepts"; CG SL.con.4; CG C.90; CG I.9.
+Rules: CG T.10 “Specify concepts for all template arguments”; CG T.11 “Whenever possible use standard concepts”; CG I.9 “If an interface is a template, document its parameters using concepts”; CG SL.con.4 “don't use `memset` or `memcpy` for arguments that are not trivially-copyable”; CG C.90 “Rely on constructors and assignment operators, not `memset` and `memcpy`”.
 Where: `stoppoint_collection::for_each(F f)` ×2 (`include/libgsdb/stoppoint_collection.hpp:71-74`), `elf_collection::for_each(F f)` ×2 (`elf.hpp:154-157`), `register_info_by(F f)` (`register_info.hpp:61-62`), `process::read_memory_as<T>` (`process.hpp:195-199`), `from_bytes<To>`, `as_bytes<From>`, `to_byte128<From>`, `to_byte64<From>` (`bit.hpp:21-50`), `to_integral<I>`, `to_float<F>` (`parse.hpp:15-16, 51-52`). The project already writes concepts well (`stoppoint_concept`, `format_join`'s `std::input_iterator`/`std::ranges::range` constraints), so the precedent exists.
 Why: `read_memory_as<std::string>(addr)` and `from_bytes<std::vector<int>>(p)` compile today and are undefined behaviour; a constraint turns that into a compile error with a readable message. `for_each(F)` should say what it calls `F` with.
 Fix:
@@ -474,13 +475,13 @@ template <std::floating_point F> std::optional<F> to_float(std::string_view sv);
 ```
 
 ### 42. Full specialization of a function template — should
-Rules: CG T.144 "Don't specialize function templates"; CCS #66; EC++ (overloading vs specialization); note `std::byte` is not `std::integral`, so the constraint in #41 makes this explicit.
+Rules: CG T.144 “Don't specialize function templates”; CCS Item 66 “Don't specialize function templates”; Herb Sutter, "Why Not Specialize Function Templates?" (C/C++ Users Journal, 2001).
 Where: `include/libgsdb/parse.hpp:41-49` (`template <> inline std::optional<std::byte> to_integral<std::byte>(std::string_view, int)`).
 Why: function-template specializations do not participate in overload resolution and interact surprisingly with the primary template's overloads; the guideline is to overload or branch inside the primary.
 Fix: `if constexpr (std::same_as<I, std::byte>) { ... }` inside the primary (relax the constraint to `std::integral<I> || std::same_as<I, std::byte>`), or a separate `to_byte(std::string_view)` function.
 
 ### 43. Hand-rolled `gsdb::span` on a C++23 code base — should
-Rules: CG ES.1 "Prefer the standard library to other libraries and to 'handcrafted code'"; CG T.47 "Avoid highly visible unconstrained templates with common names"; CG P.4; CG I.13 "Do not pass an array as a single pointer".
+Rules: CG ES.1 “Prefer the standard library to other libraries and to "handcrafted code"”; CG T.47 “Avoid highly visible unconstrained templates with common names”; CG P.4 “Ideally, a program should be statically type safe”; CG I.13 “Do not pass an array as a single pointer”; cppreference: `std::span` (C++20); cppreference: `std::as_bytes`.
 Where: `include/libgsdb/types.hpp:59-77` and every `span<const std::byte>` use. Concrete cost: `test/tests.cpp:697-699` builds `{bytes, bytes + range_data.size()}` — an **8-byte** span over **64 bytes** of `std::uint64_t` data (element count used as byte count); the test passes only because `range_list::iterator` never checks `data_.end()`. With `std::as_bytes(std::span{range_data})` the length is correct by construction.
 Why: the local `span` lacks `data()`, `subspan()`, `size_bytes()`, `empty()`, a const `operator[]`, and CTAD; `std::span<const std::byte>` has all of them plus `std::as_bytes`/`std::as_writable_bytes`, and the name `span` in `namespace gsdb` will collide with `std::span` the day someone writes `using namespace std;` in a test.
 Fix: `using std::span;` is not enough because of the two-pointer constructor and the `vector<U>` converting constructor; replace uses with `std::span<const std::byte>` (its `(first, last)` constructor covers `{start, end}`), delete `gsdb::span`, and fix the test with `std::as_bytes`.
@@ -488,98 +489,99 @@ Fix: `using std::span;` is not enough because of the two-pointer constructor and
 ### 5.7 Error handling
 
 ### 44. `errno` read after work that can change it — should
-Rules: CG E.28 "Avoid error handling based on global state (e.g. `errno`)"; CERT ERR30-C (analogue).
+Rules: CG E.28 “Avoid error handling based on global state (e.g. `errno`)”; CERT ERR30-C “Take care when reading errno” (a CERT C rule; `std::strerror(errno)` is that C interface).
 Where: `include/libgsdb/error.hpp:20-23` — `throw error(prefix + ": " + std::strerror(errno));` evaluates `prefix + ": "` (allocation) before `std::strerror(errno)`. Order of evaluation of `operator+` operands is unspecified pre-C++17 and left-to-right since; either way, intervening library calls may clobber `errno`.
 Fix: `const int err = errno;` as the first statement of `send_errno`, then `std::strerror(err)` (or `std::system_error{err, std::generic_category(), prefix}` — which also gives callers the code, see #48).
 
 ### 45. Library code prints to `std::cerr` and calls `std::terminate` — should
-Rules: CG E.2 "Throw an exception to signal that a function can't perform its assigned task"; CERT ERR50-CPP "Do not abruptly terminate the program"; CG SL.io (a library should not own the process's stderr).
+Rules: CG E.2 “Throw an exception to signal that a function can't perform its assigned task”; CERT ERR50-CPP “Do not abruptly terminate the program”.
 Where: `src/registers.cpp:109-112` (`std::cerr << "... mismatched register and value sizes!"; std::terminate();`), which is also the only reason `registers.cpp` includes `<iostream>`.
 Why: every other invalid-argument path in `libgsdb` throws `gsdb::error` and lets the CLI decide; this one kills the debugger (and the inferior with it). The CLI's `parse_register_value` guarantees the sizes match, so this branch is a contract check — `error::send("...")` keeps the contract and the behaviour policy.
 Fix: replace the two lines with `gsdb::error::send("registers::write: value size exceeds register size");` and delete the `<iostream>` include from `registers.cpp`.
 
 ### 46. `catch` clauses: by non-const reference, unused names, catch-all — should
-Rules: CG E.15 "Throw by value, catch exceptions from a hierarchy by reference" (const&); CG E.17 "Don't try to catch every exception in every function"; CG E.31 "Properly order your catch-clauses"; CERT ERR61-CPP.
+Rules: CG E.15 “Throw by value, catch exceptions from a hierarchy by reference” (its example recommends `catch (const base_class& e)`); CG E.17 “Don't try to catch every exception in every function” (the catch-all around `.value()`).
 Where: `tools/gsdb.cpp:381` and `:431` (`catch (gsdb::error& err)`; `err` unused at 373); `:415-416` (`catch (...) {}` around `std::optional::value()` calls, then a generic "Invalid format!").
 Fix: `catch (const gsdb::error&)`; replace the catch-all with `catch (const std::bad_optional_access&)` or, better, test the `optional` before `.value()` and drop the `try` entirely.
 
 ### 47. Unchecked or unsafe conversions of external input — should
-Rules: CG SL.io.2 "When reading, always consider ill-formed input"; CERT ERR62-CPP "Detect errors when converting a string to a number"; CERT STR37-C (analogue: character-classification functions take `unsigned char`); CG I.5.
-Where: `std::atoi(argv[2])` for the `-p <pid>` argument (`tools/gsdb.cpp:172`) — `gsdb -p abc` attaches to PID 0 → "INVALID PID" is caught later only by luck; `isdigit(syscall[0])` on a `char` (and on a possibly empty string) (`gsdb.cpp:874`); `std::regex_search(data, groups, map_regex);` result ignored before `groups[2]` (`test/tests.cpp:121`); `mkdtemp(tmp_dir)` return value ignored (`src/target.cpp:66`).
+Rules: CG SL.io.2 “When reading, always consider ill-formed input”; CG I.5 “State preconditions (if any)”; CERT ERR62-CPP “Detect errors when converting a string to a number”; CERT STR37-C “Arguments to character-handling functions must be representable as an unsigned char”; cppreference: `std::isdigit` (UB unless the argument is representable as `unsigned char`); CERT POS54-C “Detect and handle POSIX library errors”.
+Where: `std::atoi(argv[2])` for the `-p <pid>` argument (`tools/gsdb.cpp:172`) — `gsdb -p abc` attaches to PID 0 → "INVALID PID" is caught later only by luck (→ CERT ERR62-CPP; CG SL.io.2); `isdigit(syscall[0])` on a `char` (and on a possibly empty string) (`gsdb.cpp:874`) (→ CERT STR37-C; cppreference `std::isdigit`); `std::regex_search(data, groups, map_regex);` result ignored before `groups[2]` (`test/tests.cpp:121`) (→ CG SL.io.2); `mkdtemp(tmp_dir)` return value ignored (`src/target.cpp:66`). (→ CERT POS54-C)
 Fix: `gsdb::to_integral<pid_t>(argv[2])` (already in the project) with an error message; `!syscall.empty() && std::isdigit(static_cast<unsigned char>(syscall[0]))`; `if (!std::regex_search(...)) continue;`; check `mkdtemp` for `nullptr` and `error::send_errno`.
 
 ### 48. Error-policy consistency — consider
-Rules: CG E.14 "Use purpose-designed user-defined types as exceptions (not built-in types)"; CG E.27 "If you can't throw exceptions, use error codes systematically"; CG F.46 "`int` is the return type for `main()`"; CG I.6; CPL.3.
+Rules: CG E.1 “Develop an error-handling strategy early in a design”; CG E.14 “Use purpose-designed user-defined types as exceptions (not built-in types)”; CG I.5 “State preconditions (if any)”; CG I.6 “Prefer `Expects()` for expressing preconditions”; CERT ERR62-CPP “Detect errors when converting a string to a number”; POSIX.1-2024 `fork()`: in a multi-threaded process the child may call only async-signal-safe functions until `exec` (`_exit` is one, `exit` is not); cppreference: `EXIT_SUCCESS`, `EXIT_FAILURE`.
 Where/what:
-- one exception type (`gsdb::error`) carries every failure as a string, so callers cannot distinguish "not found" from "OS call failed" from "bad user input"; the CLI currently needs no distinction, but `to_integral`/`parse_vector` already mix `std::optional` (absent) with throwing (invalid) — fine, just document the rule "optional = absent, exception = invalid";
-- `std::stoi` in `populate_existing_threads` (`src/process.cpp:1001`) throws `std::invalid_argument`, not `gsdb::error`;
-- `exit(-1)` in the forked child (`src/process.cpp:43`) — after `fork()` a child should `_exit()` (no atexit handlers, no double flush of inherited stdio buffers), and `EXIT_FAILURE` beats `-1` (also `return -1;` in `main`, `gsdb.cpp:1152`);
-- errors are printed to `std::cout` (`gsdb.cpp:1122, 1162`) while help goes to `std::cerr`; swap;
-- `assert(elf_ == other.elf_)` in `file_addr` comparisons (`include/libgsdb/types.hpp:112-125`) and `assert(elf_ && ...)` (`src/types.cpp:6`) are contract checks that vanish in release builds — decide whether cross-ELF comparison is a precondition (document it) or an error (throw).
+- one exception type (`gsdb::error`) carries every failure as a string, so callers cannot distinguish "not found" from "OS call failed" from "bad user input"; the CLI currently needs no distinction, but `to_integral`/`parse_vector` already mix `std::optional` (absent) with throwing (invalid) — fine, just document the rule "optional = absent, exception = invalid"; (→ CG E.14; CG E.1)
+- `std::stoi` in `populate_existing_threads` (`src/process.cpp:1001`) throws `std::invalid_argument`, not `gsdb::error`; (→ CG E.14; CERT ERR62-CPP)
+- `exit(-1)` in the forked child (`src/process.cpp:43`) — after `fork()` a child should `_exit()` (no atexit handlers, no double flush of inherited stdio buffers), and `EXIT_FAILURE` beats `-1` (also `return -1;` in `main`, `gsdb.cpp:1152`); (→ POSIX `fork()`; cppreference `EXIT_FAILURE`)
+- errors are printed to `std::cout` (`gsdb.cpp:1122, 1162`) while help goes to `std::cerr`; swap; (no guideline rule; diagnostics belong on stderr by POSIX/C convention)
+- `assert(elf_ == other.elf_)` in `file_addr` comparisons (`include/libgsdb/types.hpp:112-125`) and `assert(elf_ && ...)` (`src/types.cpp:6`) are contract checks that vanish in release builds — decide whether cross-ELF comparison is a precondition (document it) or an error (throw). (→ CG I.5; CG I.6)
 Fix: write the policy down in `error.hpp` ("`std::optional` = absent, `gsdb::error` = invalid input/OS failure, `assert` = internal invariant") and apply it: wrap `std::stoi` in `to_integral<pid_t>(...).value_or(...)` + `error::send`; `_exit(EXIT_FAILURE)` in the child and `return EXIT_FAILURE;` in `main`; `std::print(stderr, "{}\n", err.what())` at the two catch sites; keep the `file_addr` asserts but state the "same ELF" precondition in a comment on the class. Optionally derive `os_error`/`parse_error`/`not_found` from `gsdb::error` when a caller first needs to tell them apart.
 
 ### 5.8 Source files & headers
 
 ### 49. Include style is mixed in every file; one implicit include — should
-Rules: CG SF.12 "Prefer the quoted form of `#include` for files relative to the including file and the angle bracket form everywhere else"; CG SF.10 "Avoid dependencies on implicitly `#include`d names"; Google:Names and Order of Includes.
+Rules: CG SF.12 “Prefer the quoted form of `#include` for files relative to the including file and the angle bracket form everywhere else”; CG SF.10 “Avoid dependencies on implicitly `#include`d names”; Google C++ Style Guide, “Names and Order of Includes”; Google C++ Style Guide, “Include What You Use”.
 Where: 18 of 20 files with project includes use both `#include <libgsdb/x.hpp>` and `#include "libgsdb/y.hpp"` (e.g. `include/libgsdb/process.hpp:14-15` angle vs `:24-28` quoted; `src/dwarf.cpp:11-12` vs `:23-28`; `src/target.cpp:17-18` vs `:29-39`); clang-format then sorts them into two separate blocks, which is why the split looks intentional but isn't. `std::format` is used at `src/process.cpp:604` with no `#include <format>` (it compiles via libstdc++'s transitive includes).
 Fix: quoted for project headers, angle for system/std (the Google convention the formatter is configured for), one pass with sed; add `<format>`. Optionally set `IncludeCategories` in `.clang-format` so the order is enforced.
 
 ### 50. Headers that include heavy headers where a forward declaration suffices — should
-Rules: CG SF.9 "Avoid cyclic dependencies among source files"; CG SF.11 "Header files should be self-contained"; EC++ #31 "Minimize compilation dependencies between files"; CCS #22.
+Rules: CG SF.9 “Avoid cyclic dependencies among source files”; EC++ Item 31 “Minimize compilation dependencies between files”; CCS Item 22 “Minimize definitional dependencies. Avoid cyclic dependencies”; cppbestpractices, ch. 8 "Considering Performance", § Forward Declare When Possible.
 Where: `include/libgsdb/dwarf.hpp:19` includes `process.hpp` although `process` appears only as `const process&` in declarations (`registers.hpp` at `:20` is needed — `registers` is returned by value); `include/libgsdb/elf.hpp:18` includes `dwarf.hpp` although `dwarf` is only held by `std::unique_ptr<dwarf>` (destructor is out-of-line in `elf.cpp`) and returned by reference; `include/libgsdb/disassembler.hpp:4` includes `process.hpp` for a `process*` member and a `process&` parameter. Net effect: `process.hpp` (the largest header) is pulled into every TU, and `elf.hpp ↔ dwarf.hpp ↔ process.hpp` form a soft cycle that `types.hpp:14-18` already has to break with forward declarations.
+Note: the Google C++ Style Guide ("Forward Declarations") takes the opposite position and prefers including the header; this finding follows the Core Guidelines, EC++ and CCS.
 Fix: `class process;` / `class dwarf;` forward declarations in the three headers; include the full headers in the `.cpp` files. `stack.hpp` legitimately needs `dwarf.hpp` (`die` by value).
 
 ### 51. Header naming and C headers — consider
-Rules: CG SF.1 "Use a `.cpp` suffix for code files and `.h` for interface files if your project doesn't already follow another convention" / NL.27; `modernize-deprecated-headers`; Google (`#endif  // GUARD`).
+Rules: CG SF.1 “Use a `.cpp` suffix for code files and `.h` for interface files if your project doesn't already follow another convention” (the lone `.h`); CG NL.27 “Use a `.cpp` suffix for code files and `.h` for interface files”; cppreference: C++ library headers, "C compatibility headers" (`<cstdint>` guarantees `std::uint64_t`; the global `::uint64_t` is only "may also") (`<signal.h>` vs `<csignal>`); Google C++ Style Guide, “The #define Guard” (the `#endif  // GUARD` comment).
 Where: `include/libgsdb/detail/dwarf.h` is the only `.h` among `.hpp`s (it is a C-compatible constants table — fine if intentional; say so in a comment or rename); `test/targets/anti_debugger.cpp:1` `#include <signal.h>` → `<csignal>`; `#endif` lines carry no `// GSDB_X_HPP` comment (Google style adds one; optional).
 Fix: add `// C-compatible DWARF constant table; kept as .h on purpose` at the top of `detail/dwarf.h` (or rename to `.hpp` and update the three includers); `#include <csignal>`; if you want the `#endif` comments, a one-line sed over `include/` adds them.
 
 ### 5.9 Standard library
 
 ### 52. `count()` followed by `at()`/`emplace()` — double lookups and pre-C++20 idioms — should
-Rules: CG P.9 "Don't waste time or space"; CG ES.1; ESTL #45; `readability-container-contains`.
+Rules: CG P.9 “Don't waste time or space”; CG ES.1 “Prefer the standard library to other libraries and to "handcrafted code"”; ESTL Item 45 “Distinguish among count, find, binary_search, lower_bound, upper_bound, and equal_range”; cppreference: associative-container `contains` (C++20).
 Where: `src/syscalls.cpp:27-30` (`count(name) != 1` then `at(name)`), `src/elf.cpp:98-102` (`count(name) == 0` then `at(name)`), `src/dwarf.cpp:965-969` (`!count(offset)` → `emplace` → `at`), `:1695-1707` (`count(offset)` → `at`; then `emplace` + `at`), `src/process.cpp:302` (`!threads_.count(tid)`).
 Fix: `if (auto it = map.find(key); it != map.end()) return it->second;`; `auto [it, inserted] = abbrev_tables_.try_emplace(offset, ...)` (also avoids parsing when present); `contains()` for pure existence checks.
 
 ### 53. Output: `std::endl`, three output mechanisms in one program, per-character `<<` — should
-Rules: CG SL.io.50 "Avoid `endl`"; CG SL.io.3 "Prefer `iostream`s for I/O" (read today as: one consistent facility — `<print>` on C++23); CG SL.io.1 "Use character-level input only when you have to"; `performance-avoid-endl`.
+Rules: CG SL.io.50 “Avoid `endl`”; CG SL.io.3 “Prefer `iostream`s for I/O” (read here as "use one output facility"; on C++23 that is `<print>`); CG SL.io.1 “Use character-level input only when you have to”; cppbestpractices, ch. 8 "Considering Performance", § Get rid of std::endl; cppreference: `std::println` (C++23).
 Where: `tools/gsdb.cpp:791` (`std::cout << std::endl;`), `print_source` (`gsdb.cpp:755-792`) reads and writes one `char` at a time and mixes `std::cout << c` with `std::print`; the file uses `std::print` (26), `std::cerr <<` (17), `std::cout <<` (4).
 Fix: `std::print`/`std::println` everywhere, `std::print(stderr, ...)` for help/errors; in `print_source` read lines with `std::getline` and print each with `std::println("{} {:>{}} {}", arrow, n, width, line)`; drop `std::endl` (`'\n'` and, if needed, `std::cout.flush()`).
 
 ### 54. Compiler intrinsic where the standard has the function — should
-Rules: CG P.2 "Write in ISO Standard C++"; CG ES.1.
+Rules: CG P.2 “Write in ISO Standard C++”; CG ES.1 “Prefer the standard library to other libraries and to "handcrafted code"”; cppreference: `std::countr_zero` (C++20).
 Where: `src/process.cpp:943` (`__builtin_ctzll(status)`).
 Fix: `std::countr_zero(status)` from `<bit>` (C++20); same semantics, portable, and `constexpr`.
 
 ### 55. Standard-library idiom nits — consider
-Rules: ESTL #4 "Call `empty()` instead of checking `size()` against zero"; CG NL.8 (consistent qualification); C++20/23 replacements (EMC++ addenda); `modernize-use-starts-ends-with`.
-Where: `data.size() > 0` (`src/process.cpp:540`), `func_name != ""` (`tools/gsdb.cpp:306`) → `!empty()`; `args[2].find("0x") == 0` (`gsdb.cpp:497`) → `starts_with("0x")`; `split()` via `std::stringstream` (`gsdb.cpp:184-194`) → `std::views::split` + `std::ranges::to<std::vector<std::string>>` (C++23); unqualified `memcpy` (`src/watchpoint.cpp:61`), `uint64_t`/`size_t` (`src/dwarf.cpp:91, 118`; `test/tests.cpp:393, 401, 882`) vs `std::`-qualified everywhere else; `std::unordered_multimap<std::string, index_entry>` (`dwarf.hpp:531`) could take `std::string_view` lookups with a transparent hasher (`struct sv_hash { using is_transparent = void; ... }` + `std::equal_to<>`), which is what unlocks `find_functions(std::string_view)` in #9.
+Rules: ESTL Item 4 “Call empty instead of checking size() against zero”; cppreference: `std::basic_string::starts_with` (C++20); cppreference: `std::views::split`; cppreference: `std::ranges::to` (C++23); cppreference: C++ library headers, "C compatibility headers" (`<cstdint>` guarantees `std::uint64_t`; the global `::uint64_t` is only "may also"); ToTW #144 “Heterogeneous Lookup in Associative Containers”.
+Where: `data.size() > 0` (`src/process.cpp:540`), `func_name != ""` (`tools/gsdb.cpp:306`) → `!empty()` (→ ESTL Item 4); `args[2].find("0x") == 0` (`gsdb.cpp:497`) → `starts_with("0x")` (→ cppreference `starts_with`); `split()` via `std::stringstream` (`gsdb.cpp:184-194`) → `std::views::split` + `std::ranges::to<std::vector<std::string>>` (C++23) (→ cppreference `std::views::split`; cppreference `std::ranges::to`); unqualified `memcpy` (`src/watchpoint.cpp:61`), `uint64_t`/`size_t` (`src/dwarf.cpp:91, 118`; `test/tests.cpp:393, 401, 882`) vs `std::`-qualified everywhere else (→ cppreference "C compatibility headers"); `std::unordered_multimap<std::string, index_entry>` (`dwarf.hpp:531`) could take `std::string_view` lookups with a transparent hasher (`struct sv_hash { using is_transparent = void; ... }` + `std::equal_to<>`), which is what unlocks `find_functions(std::string_view)` in #9. (→ ToTW #144)
 Fix: `!data.empty()`, `!func_name.empty()`, `args[2].starts_with("0x")`; `std::memcpy`, `std::uint64_t`, `std::size_t` at the listed lines; for `split`, `return str | std::views::split(delimiter) | std::ranges::to<std::vector<std::string>>();`; for the index, `std::unordered_multimap<std::string, index_entry, string_hash, std::equal_to<>>` with a ten-line `string_hash` (`is_transparent`, hashes `std::string_view`).
 
 ### 5.10 Concurrency & signals
 
 ### 56. SIGINT handler dereferences a C++ object through a global pointer — should
-Rules: CG I.2 "Avoid non-const global variables"; CG CP.1 / CP.200 (signals are the one concurrency in this program); CERT SIG30-C/SIG31-C (analogues: call only async-signal-safe functions, access only `volatile sig_atomic_t` or lock-free atomics from a handler); CERT MSC54-CPP "A signal handler must be a plain old function".
+Rules: CG I.2 “Avoid non-`const` global variables”; CERT SIG30-C “Call only asynchronous-safe functions within signal handlers”; CERT SIG31-C “Do not access shared objects in signal handlers”; CERT MSC54-CPP “A signal handler must be a plain old function”.
 Where: `tools/gsdb.cpp:52-59` (`gsdb::process* g_gsdb_process`; `kill(g_gsdb_process->pid(), SIGSTOP)`), `:1157-1158` (`signal(SIGINT, handle_sigint)`).
 Why: `pid()` is an inline getter today, so the handler is *practically* safe; the guideline asks that this not depend on the implementation of a class the handler cannot see. `std::signal` also has implementation-defined semantics (`SA_RESTART`, handler reset) that `sigaction` pins down.
 Fix: `std::atomic<pid_t> g_inferior_pid{0};` (lock-free on x86-64, `static_assert(std::atomic<pid_t>::is_always_lock_free)`) or `volatile std::sig_atomic_t`; set it after `attach()`; handler becomes `kill(g_inferior_pid.load(), SIGSTOP);`; install with `sigaction` and `SA_RESTART`.
 
 ### 57. Document that the caches are single-threaded — consider
-Rules: EMC++ #16 "Make `const` member functions thread safe"; CG CP.1 "Assume that your code will run as part of a multi-threaded program".
+Rules: EMC++ Item 16 “Make const member functions thread safe”; CG CP.1 “Assume that your code will run as part of a multi-threaded program”.
 Where: `mutable` caches mutated in `const` functions — `call_frame_information::cie_map_` (`include/libgsdb/dwarf.hpp:92-93`), `line_table::file_names_` (`:362`), `dwarf::function_index_` (`:531`).
 Fix: one class-level comment ("not thread-safe; the debugger is single-threaded") or, if that ever changes, `std::call_once`/a mutex around `index()`.
 
 ### 5.11 Naming, layout, comments
 
 ### 58. Accessor naming: `get_x()` and `x()` coexist, sometimes in the same class — should
-Rules: CG NL.8 "Use a consistent naming style"; Google:Function Names; CCS #0.
+Rules: CG NL.8 “Use a consistent naming style”; Google C++ Style Guide, “Function Names”; CCS Item 0 “Don't sweat the small stuff. (Or: Know what not to standardize.)” (consistency within a project).
 Where: 37 `get_*` accessors vs bare accessors (`pid()`, `state()`, `id()`, `address()`, `cfa()`, `frames()`, `lines()`, `root()`, `data()`, `path()`, `mode()`, `size()`): `process::get_pc()` vs `process::pid()`; `elf::get_header()` vs `elf::path()`; `stack::get_pc()` vs `stack::regs()`; `pipe::get_read()`; `syscall_catch_policy::get_mode()` vs `watchpoint::mode()`; `target::get_process()`/`get_elf()`/`get_main_elf()`/`get_elves()` vs `target::breakpoints()`/`threads()`.
 Why: readers cannot predict a name; the split does not follow any rule (cheap getter vs computation).
 Fix: bare nouns for cheap accessors (`header()`, `pc()`, `read_fd()`, `mode()`), verbs for work (`find_functions`, `read_memory`, `section_containing(addr)`, `symbol_at(addr)`). Where the noun collides with the type (`process()`), `proc()`/`inferior()` are common.
 
 ### 59. Comments that teach C++ rather than explain the code; stale markers — should
-Rules: CG NL.1 "Don't say in comments what can be clearly stated in code"; CG NL.2 "State intent in comments"; CG NL.3 "Keep comments crisp".
+Rules: CG NL.1 “Don't say in comments what can be clearly stated in code”; CG NL.2 “State intent in comments”; CG NL.3 “Keep comments crisp”.
 Where (≈40 blocks; representative):
 - language tutorials: `include/libgsdb/register_info.hpp:48-49, 72-73` (what `inline` does — twice), `include/libgsdb/stoppoint_collection.hpp:30-33, 37, 54-56, 93-94, 123-125, 155-156` (what a template/`conditional_t`/`typename`/`const_cast`/`**` is), `include/libgsdb/dwarf.hpp:127-128, 523-530, 611-619, 628-638, 651-653` (what `mutable` is, the five iterator categories, how post-increment works), `include/libgsdb/elf.hpp:115-124` (what a multimap is), `src/pipe.cpp:47-48, 54` (what `::` and "raw pointers are valid iterators" mean), `src/process.cpp:693-703` (the `iovec` man page), `src/elf.cpp:205` (`// structured bindings`), `src/registers.cpp:101-102`, `test/tests.cpp:388-392` (the same init-capture explanation pasted twice);
 - stale/orphaned: `// why?` (`src/dwarf.cpp:77`), `// So one` (`:489`), `// FIXME` with no explanation (`src/stack.cpp:132`), a comment referring to `sdb::` (`src/dwarf.cpp:1930-1931`), "Meyers const-overload" block that is now dead code (`target.hpp:71`);
@@ -588,25 +590,25 @@ Why: the *why*-comments in this codebase are excellent (the `int3` PC rewind ess
 Fix: delete the tutorials, keep every hardware/ABI/why comment, resolve or expand the three stale markers.
 
 ### 60. Identifier spelling and small layout points — consider
-Rules: CG NL.19 "Avoid names that are easily misread"; CG NL.8; CG NL.16 "Use a conventional class member declaration order".
-Where: member `fde_has_augmentaion` (typo in an *identifier*, `include/libgsdb/dwarf.hpp:36`, used at `src/dwarf.cpp:357`); local `chilren` (`dwarf.cpp:1674`); parameter named like a member `iterator(const line_table* table_)` (`dwarf.hpp:398`); comment typos (`Everyt`, `alredy`, `wsa`, `memeory`, `parant`, `itsef`, `statis`, `doen`, `requestd`, `rebgin`, `leaset`, `reister`, `x6` — a spell-checker pass); member order: `process() = delete;` block sits after public member functions (`process.hpp:133-137`) while every other class puts special members first; `breakpoint_site` interleaves `using id_type` between deleted special members and accessors (`breakpoint_site.hpp:16-35`).
+Rules: CG NL.8 “Use a consistent naming style” (the member-style parameter name); CG NL.16 “Use a conventional class member declaration order” (member order); cppbestpractices, ch. 2 "Use the Tools Available", § codespell (the spelling pass).
+Where: member `fde_has_augmentaion` (typo in an *identifier*, `include/libgsdb/dwarf.hpp:36`, used at `src/dwarf.cpp:357`); local `chilren` (`dwarf.cpp:1674`) (→ cppbestpractices (codespell)); parameter named like a member `iterator(const line_table* table_)` (`dwarf.hpp:398`) (→ CG NL.8); comment typos (`Everyt`, `alredy`, `wsa`, `memeory`, `parant`, `itsef`, `statis`, `doen`, `requestd`, `rebgin`, `leaset`, `reister`, `x6` — a spell-checker pass) (→ cppbestpractices (codespell)); member order: `process() = delete;` block sits after public member functions (`process.hpp:133-137`) while every other class puts special members first; `breakpoint_site` interleaves `using id_type` between deleted special members and accessors (`breakpoint_site.hpp:16-35`). (→ CG NL.16)
 Fix: rename `fde_has_augmentaion` → `fde_has_augmentation` (two sites) and `chilren` → `children`; rename the parameter to `table`; run a spell-checker (`codespell include src tools test`) over comments; move the `= delete` block in `process` to the top of the public section and group `breakpoint_site` as types → special members → operations → queries, matching the other classes.
 
 ### 5.12 Build & tooling
 
 ### 61. Warning set is the 2005 baseline — should
-Rules: CCS #1 "Compile cleanly at high warning levels"; Turner (recommended flags); CG P.12 "Use supporting tools as appropriate"; EC++ #53.
+Rules: CCS Item 1 “Compile cleanly at high warning levels”; EC++ Item 53 “Pay attention to compiler warnings”; CG P.12 “Use supporting tools as appropriate”; cppbestpractices, ch. 2 "Use the Tools Available", § Compilers → GCC / Clang (recommended warning flags).
 Where: `CMakeLists.txt:32` (`-Wall -Wfatal-errors -Wextra -Werror -g -O1`).
 Why: `-Wshadow` would have caught #33, `-Wconversion -Wsign-conversion` #30, `-Wold-style-cast` guards #32, `-Wnon-virtual-dtor`/`-Woverloaded-virtual` protect #19/#20, `-Wimplicit-fallthrough` clarifies #37, `-Wpedantic` enforces P.2 (#54). The project already accepts `-Werror`, so adding flags is cheap now and expensive later.
 Fix: add `-Wshadow -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -Woverloaded-virtual -Wpedantic -Wnull-dereference -Wimplicit-fallthrough -Wcast-align -Wuseless-cast -Wduplicated-cond -Wlogical-op` (GCC set) behind a `GSDB_STRICT_WARNINGS` option first, clean the baseline, then default it on. Consider dropping `-Wfatal-errors` in CI (it hides all but the first error — today it hid two of the three WIP blockers).
 
 ### 62. No `.clang-tidy`; a dead dependency; two switches for tests — should
-Rules: CG P.12; Turner (static analysis in the build); CCS #2 "Use an automated build system".
+Rules: CG P.12 “Use supporting tools as appropriate”; CCS Item 2 “Use an automated build system”; cppbestpractices, ch. 2 "Use the Tools Available", §§ LLVM-based tools / Static Analyzers.
 Where: no `.clang-tidy` at the root although `compile_commands.json` is generated and symlinked; `CMakeLists.txt:86-90` `find_package(GTest REQUIRED)` + `include(GoogleTest)` are unused (CLAUDE.md already notes this — this review confirms nothing links it); `option(ENABLE_TESTING ...)` (`:78`) coexists with CTest's `BUILD_TESTING` (`:99`), and only the latter gates `add_subdirectory(test)`.
 Fix: commit the `.clang-tidy` from §7; delete the GTest lines (removes a hard `find_package` failure for anyone without GTest); drop `ENABLE_TESTING` or make it set `BUILD_TESTING`.
 
 ### 63. CMake modernization — consider
-Rules: Turner (modern CMake); CG A.1-A.4 (architecture hygiene).
+Rules: CMake docs: `include_directories()` ("Prefer the `target_include_directories()` command"); CMake docs: `CMAKE_<LANG>_COMPILER` (set in a toolchain file or with `-D`); CMake docs: `cmake-presets(7)`; Henry Schreiner et al., *An Introduction to Modern CMake*.
 Where: `include_directories(${PROJECT_SOURCE_DIR})` (`CMakeLists.txt:95`) is a directory-scoped include applied to every target while the library already declares target-scoped includes; `set(CMAKE_C_COMPILER gcc)` (`:26`) inside the project (compilers belong to the toolchain/environment — the Nix shell already sets them); `-g -O1` hard-coded for every build type (`:31`) instead of per-config flags; `include(GNUInstallDirs)` repeated in three lists; no sanitizer or `CMakePresets.json` configuration (`-fsanitize=address,undefined` would be a natural companion to the ptrace tests).
 Fix: delete `include_directories(...)` (the library's `target_include_directories` already covers consumers) and `set(CMAKE_C_COMPILER gcc)`; replace the global `-g -O1` with `$<$<CONFIG:Debug>:-g -O0>` / `$<$<CONFIG:RelWithDebInfo>:-g -O2>` generator expressions (or just rely on `CMAKE_BUILD_TYPE`); keep one `include(GNUInstallDirs)` in the root; add an `option(GSDB_SANITIZE ...)` that appends `-fsanitize=address,undefined -fno-omit-frame-pointer` to compile and link options, and a `CMakePresets.json` with `debug`, `release`, `asan` presets.
 
@@ -706,8 +708,261 @@ Run: `clang-tidy -p build src/*.cpp tools/gsdb.cpp test/tests.cpp` (or the skill
 - Mixed include styles: 18 files (see #49).
 - `and`/`or`/`not` 257 vs `&&`/`||`/`!` 77 (see #35).
 
-## Appendix B — Rules referenced (exact upstream titles)
+## Appendix B — Sources and where to read them
 
-CG A.1-A.4 (architecture) · C.9 Minimize exposure of members · C.12 Don't make data members `const` or references in a copyable or movable type · C.21 If you define or `=delete` any copy, move, or destructor function, define or `=delete` them all · C.31 All resources acquired by a class must be released by the class's destructor · C.32 If a class has a raw pointer (`T*`) or reference (`T&`), consider whether it might be owning · C.41 A constructor should create a fully initialized object · C.45 Don't define a default constructor that only initializes data members; use default member initializers instead · C.46 By default, declare single-argument constructors explicit · C.48 Prefer default member initializers to member initializers in constructors for constant initializers · C.49 Prefer initialization to assignment in constructors · C.50 Use a factory function if you need "virtual behavior" during initialization · C.82 Don't call virtual functions in constructors and destructors · C.86 Make `==` symmetric with respect to operand types and `noexcept` · C.90 Rely on constructors and assignment operators, not `memset` and `memcpy` · C.133 Avoid `protected` data · C.146 Use `dynamic_cast` where class hierarchy navigation is unavoidable · C.150 Use `make_unique()` to construct objects owned by `unique_ptr`s · C.153 Prefer virtual function to casting · C.161 Use non-member functions for symmetric operators · C.181 Avoid "naked" `union`s · C.182 Use anonymous `union`s to implement tagged unions · Con.2 By default, make member functions `const` · Con.4 Use `const` to define objects with values that do not change after construction · Con.5 Use `constexpr` for values that can be computed at compile time · CP.1 Assume that your code will run as part of a multi-threaded program · CP.200 Use `volatile` only to talk to non-C++ memory · CPL.3 If you must use C for interfaces, use C++ in the calling code using such interfaces · E.2 Throw an exception to signal that a function can't perform its assigned task · E.6 Use RAII to prevent leaks · E.14 Use purpose-designed user-defined types as exceptions (not built-in types) · E.15 Throw by value, catch exceptions from a hierarchy by reference · E.17 Don't try to catch every exception in every function · E.19 Use a `final_action` object to express cleanup if no suitable resource handle is available · E.27 If you can't throw exceptions, use error codes systematically · E.28 Avoid error handling based on global state (e.g. `errno`) · E.31 Properly order your catch-clauses · Enum.2 Use enumerations to represent sets of related named constants · Enum.3 Prefer class enums over "plain" enums · Enum.4 Define operations on enumerations for safe and simple use · Enum.6 Avoid unnamed enumerations · ES.1 Prefer the standard library to other libraries and to "handcrafted code" · ES.3 Don't repeat yourself, avoid redundant code · ES.10 Declare one name (only) per declaration · ES.12 Do not reuse names in nested scopes · ES.20 Always initialize an object · ES.22 Don't declare a variable until you have a value to initialize it with · ES.27 Use `std::array` or `stack_array` for arrays on the stack · ES.28 Use lambdas for complex initialization, especially of `const` variables · ES.31 Don't use macros for constants or "functions" · ES.32 Use `ALL_CAPS` for all macro names · ES.33 If you must use macros, give them unique names · ES.41 If in doubt about operator precedence, parenthesize · ES.45 Avoid "magic constants"; use symbolic constants · ES.46 Avoid lossy (narrowing, truncating) arithmetic conversions · ES.48 Avoid casts · ES.49 If you must use a cast, use a named cast · ES.50 Don't cast away `const` · ES.56 Write `std::move()` only when you need to explicitly move an object to another scope · ES.65 Don't dereference an invalid pointer · ES.71 Prefer a range-`for`-statement to a `for`-statement when there is a choice · ES.73 Prefer a `while`-statement to a `for`-statement when there is no obvious loop variable · ES.75 Avoid `do`-statements · ES.78 Don't rely on implicit fallthrough in `switch` statements · ES.87 Don't add redundant `==` or `!=` to conditions · ES.100 Don't mix signed and unsigned arithmetic · ES.101 Use unsigned types for bit manipulation · ES.102 Use signed types for arithmetic · ES.104 Don't underflow · ES.106 Don't try to avoid negative values by using `unsigned` · F.1 "Package" meaningful operations as carefully named functions · F.2 A function should perform a single logical operation · F.7 For general use, take `T*` or `T&` arguments rather than smart pointers · F.9 Unused parameters should be unnamed · F.16 For "in" parameters, pass cheaply-copied types by value and others by reference to `const` · F.18 For "will-move-from" parameters, pass by `X&&` and `std::move` the parameter · F.20 For "out" output values, prefer return values to output parameters · F.46 `int` is the return type for `main()` · F.49 Don't return `const T` · F.52 Prefer capturing by reference in lambdas that will be used locally, including passed to algorithms · F.53 Avoid capturing by reference in lambdas that will be used non-locally, including returned, stored on the heap, or passed to another thread · F.54 When writing a lambda that captures `this` or any class data member, don't use `[=]` default capture · F.60 Prefer `T*` over `T&` when "no argument" is a valid option · I.2 Avoid non-const global variables · I.4 Make interfaces precisely and strongly typed · I.5 State preconditions (if any) · I.6 Prefer `Expects()` for expressing preconditions · I.9 If an interface is a template, document its parameters using concepts · I.13 Do not pass an array as a single pointer · I.24 Avoid adjacent parameters that can be invoked by the same arguments in either order · NL.1 Don't say in comments what can be clearly stated in code · NL.2 State intent in comments · NL.3 Keep comments crisp · NL.8 Use a consistent naming style · NL.16 Use a conventional class member declaration order · NL.19 Avoid names that are easily misread · NL.25 Don't use `void` as an argument type · NL.27 Use a `.cpp` suffix for code files and `.h` for interface files · P.2 Write in ISO Standard C++ · P.4 Ideally, a program should be statically type safe · P.9 Don't waste time or space · P.11 Encapsulate messy constructs, rather than spreading through the code · P.12 Use supporting tools as appropriate · R.1 Manage resources automatically using resource handles and RAII · R.3 A raw pointer (a `T*`) is non-owning · R.10 Avoid `malloc()` and `free()` · R.12 Immediately give the result of an explicit resource allocation to a manager object · R.30 Take smart pointers as parameters only to explicitly express lifetime semantics · SF.1 Use a `.cpp` suffix for code files and `.h` for interface files if your project doesn't already follow another convention · SF.9 Avoid cyclic dependencies among source files · SF.10 Avoid dependencies on implicitly `#include`d names · SF.11 Header files should be self-contained · SF.12 Prefer the quoted form of `#include` for files relative to the including file and the angle bracket form everywhere else · SL.con.4 don't use `memset` or `memcpy` for arguments that are not trivially-copyable · SL.io.1 Use character-level input only when you have to · SL.io.2 When reading, always consider ill-formed input · SL.io.3 Prefer `iostream`s for I/O · SL.io.50 Avoid `endl` · SL.str.1 Use `std::string` to own character sequences · SL.str.2 Use `std::string_view` or `gsl::span<char>` to refer to character sequences · T.10 Specify concepts for all template arguments · T.11 Whenever possible use standard concepts · T.47 Avoid highly visible unconstrained templates with common names · T.144 Don't specialize function templates.
+Every source cited in this report, with where to read it. Core Guidelines links go to the rule on the canonical page; book items have no free online text, so the edition and ISBN are given.
 
-EMC++ #10, #15, #16, #17, #21, #31, #41 · EC++ #3, #4, #6, #9, #13, #28, #31, #53 · ESTL #4, #45 · CCS #0, #1, #2, #5, #13, #17, #18, #19, #22, #41, #48, #52, #53, #66, #90-#92 · ToTW #77, #94, #117, #134, #141, #142, #163, #188 · CERT ERR30-C, ERR50-CPP, ERR61-CPP, ERR62-CPP, FIO51-CPP, MEM50-CPP, MSC54-CPP, OOP50-CPP, SIG30-C, SIG31-C, STR37-C · HIC++ 7.1.4 · Google: Implicit Conversions, Function Names, Names and Order of Includes · Turner: warnings, `[[nodiscard]]`, clang-tidy, modern CMake · LLVM: early exits, no commented-out code.
+**C++ Core Guidelines** — Stroustrup & Sutter (eds.), https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines (snapshot dated Jun 14, 2026)
+
+| Rule | Title |
+|---|---|
+| [C.9](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-private) | Minimize exposure of members |
+| [C.12](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-constref) | Don't make data members `const` or references in a copyable or movable type |
+| [C.21](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-five) | If you define or `=delete` any copy, move, or destructor function, define or `=delete` them all |
+| [C.31](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-dtor-release) | All resources acquired by a class must be released by the class's destructor |
+| [C.32](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-dtor-ptr) | If a class has a raw pointer (`T*`) or reference (`T&`), consider whether it might be owning |
+| [C.41](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-complete) | A constructor should create a fully initialized object |
+| [C.46](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-explicit) | By default, declare single-argument constructors explicit |
+| [C.48](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-in-class-initializer) | Prefer default member initializers to member initializers in constructors for constant initializers |
+| [C.49](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-initialize) | Prefer initialization to assignment in constructors |
+| [C.50](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-factory) | Use a factory function if you need "virtual behavior" during initialization |
+| [C.82](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-ctor-virtual) | Don't call virtual functions in constructors and destructors |
+| [C.86](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-eq) | Make `==` symmetric with respect to operand types and `noexcept` |
+| [C.90](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-memset) | Rely on constructors and assignment operators, not `memset` and `memcpy` |
+| [C.133](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rh-protected) | Avoid `protected` data |
+| [C.146](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rh-dynamic_cast) | Use `dynamic_cast` where class hierarchy navigation is unavoidable |
+| [C.150](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rh-make_unique) | Use `make_unique()` to construct objects owned by `unique_ptr`s |
+| [C.153](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rh-use-virtual) | Prefer virtual function to casting |
+| [C.161](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ro-symmetric) | Use non-member functions for symmetric operators |
+| [C.181](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ru-naked) | Avoid "naked" `union`s |
+| [C.182](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ru-anonymous) | Use anonymous `union`s to implement tagged unions |
+| [CP.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-multi) | Assume that your code will run as part of a multi-threaded program |
+| [CPL.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rcpl-interface) | If you must use C for interfaces, use C++ in the calling code using such interfaces |
+| [Con.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconst-fct) | By default, make member functions `const` |
+| [Con.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconst-ref) | By default, pass pointers and references to `const`s |
+| [Con.4](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconst-const) | Use `const` to define objects with values that do not change after construction |
+| [Con.5](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconst-constexpr) | Use `constexpr` for values that can be computed at compile time |
+| [E.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-design) | Develop an error-handling strategy early in a design |
+| [E.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-throw) | Throw an exception to signal that a function can't perform its assigned task |
+| [E.6](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-raii) | Use RAII to prevent leaks |
+| [E.14](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-exception-types) | Use purpose-designed user-defined types as exceptions (not built-in types) |
+| [E.15](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-exception-ref) | Throw by value, catch exceptions from a hierarchy by reference |
+| [E.17](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-not-always) | Don't try to catch every exception in every function |
+| [E.19](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-finally) | Use a `final_action` object to express cleanup if no suitable resource handle is available |
+| [E.25](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-no-throw-raii) | If you can't throw exceptions, simulate RAII for resource management |
+| [E.28](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-no-throw) | Avoid error handling based on global state (e.g. `errno`) |
+| [ES.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-lib) | Prefer the standard library to other libraries and to "handcrafted code" |
+| [ES.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-dry) | Don't repeat yourself, avoid redundant code |
+| [ES.6](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-cond) | Declare names in for-statement initializers and conditions to limit scope |
+| [ES.10](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-name-one) | Declare one name (only) per declaration |
+| [ES.12](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-reuse) | Do not reuse names in nested scopes |
+| [ES.20](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-always) | Always initialize an object |
+| [ES.22](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-init) | Don't declare a variable until you have a value to initialize it with |
+| [ES.27](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-stack) | Use `std::array` or `stack_array` for arrays on the stack |
+| [ES.28](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-lambda-init) | Use lambdas for complex initialization, especially of `const` variables |
+| [ES.30](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-macros) | Don't use macros for program text manipulation |
+| [ES.31](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-macros2) | Don't use macros for constants or "functions" |
+| [ES.32](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-all_caps) | Use `ALL_CAPS` for all macro names |
+| [ES.33](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-macros3) | If you must use macros, give them unique names |
+| [ES.41](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-parens) | If in doubt about operator precedence, parenthesize |
+| [ES.45](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-magic) | Avoid "magic constants"; use symbolic constants |
+| [ES.46](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-narrowing) | Avoid lossy (narrowing, truncating) arithmetic conversions |
+| [ES.48](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-casts) | Avoid casts |
+| [ES.49](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-casts-named) | If you must use a cast, use a named cast |
+| [ES.50](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-casts-const) | Don't cast away `const` |
+| [ES.56](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-move) | Write `std::move()` only when you need to explicitly move an object to another scope |
+| [ES.65](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-deref) | Don't dereference an invalid pointer |
+| [ES.71](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-for-range) | Prefer a range-`for`-statement to a `for`-statement when there is a choice |
+| [ES.73](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-while-for) | Prefer a `while`-statement to a `for`-statement when there is no obvious loop variable |
+| [ES.75](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-do) | Avoid `do`-statements |
+| [ES.78](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-break) | Don't rely on implicit fallthrough in `switch` statements |
+| [ES.87](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-if) | Don't add redundant `==` or `!=` to conditions |
+| [ES.100](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-mix) | Don't mix signed and unsigned arithmetic |
+| [ES.101](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-unsigned) | Use unsigned types for bit manipulation |
+| [ES.102](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-signed) | Use signed types for arithmetic |
+| [ES.104](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-underflow) | Don't underflow |
+| [ES.106](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#res-nonnegative) | Don't try to avoid negative values by using `unsigned` |
+| [Enum.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#renum-set) | Use enumerations to represent sets of related named constants |
+| [Enum.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#renum-class) | Prefer class enums over "plain" enums |
+| [Enum.4](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#renum-oper) | Define operations on enumerations for safe and simple use |
+| [Enum.6](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#renum-unnamed) | Avoid unnamed enumerations |
+| [F.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-package) | "Package" meaningful operations as carefully named functions |
+| [F.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-logical) | A function should perform a single logical operation |
+| [F.7](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-smart) | For general use, take `T*` or `T&` arguments rather than smart pointers |
+| [F.9](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-unused) | Unused parameters should be unnamed |
+| [F.16](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-in) | For "in" parameters, pass cheaply-copied types by value and others by reference to `const` |
+| [F.18](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-consume) | For "will-move-from" parameters, pass by `X&&` and `std::move` the parameter |
+| [F.24](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-range) | Use a `span<T>` or a `span_p<T>` to designate a half-open sequence |
+| [F.49](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-return-const) | Don't return `const T` |
+| [F.52](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-reference-capture) | Prefer capturing by reference in lambdas that will be used locally, including passed to algorithms |
+| [F.53](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-value-capture) | Avoid capturing by reference in lambdas that will be used non-locally, including returned, stored on the heap, or passed to another thread |
+| [F.54](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-this-capture) | When writing a lambda that captures `this` or any class data member, don't use `[=]` default capture |
+| [F.60](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rf-ptr-ref) | Prefer `T*` over `T&` when "no argument" is a valid option |
+| [I.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-global) | Avoid non-`const` global variables |
+| [I.4](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-typed) | Make interfaces precisely and strongly typed |
+| [I.5](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-pre) | State preconditions (if any) |
+| [I.6](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-expects) | Prefer `Expects()` for expressing preconditions |
+| [I.9](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-concepts) | If an interface is a template, document its parameters using concepts |
+| [I.13](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-array) | Do not pass an array as a single pointer |
+| [I.24](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ri-unrelated) | Avoid adjacent parameters that can be invoked by the same arguments in either order with different meaning |
+| [NL.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-comments) | Don't say in comments what can be clearly stated in code |
+| [NL.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-comments-intent) | State intent in comments |
+| [NL.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-comments-crisp) | Keep comments crisp |
+| [NL.8](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-name) | Use a consistent naming style |
+| [NL.16](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-order) | Use a conventional class member declaration order |
+| [NL.19](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-misread) | Avoid names that are easily misread |
+| [NL.25](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-void) | Don't use `void` as an argument type |
+| [NL.27](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rl-file-suffix) | Use a `.cpp` suffix for code files and `.h` for interface files |
+| [P.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rp-direct) | Express ideas directly in code |
+| [P.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rp-cplusplus) | Write in ISO Standard C++ |
+| [P.4](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rp-typesafe) | Ideally, a program should be statically type safe |
+| [P.9](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rp-waste) | Don't waste time or space |
+| [P.11](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rp-library) | Encapsulate messy constructs, rather than spreading through the code |
+| [P.12](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rp-tools) | Use supporting tools as appropriate |
+| [Pro.lifetime](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#ss-lifetime) | Lifetime safety profile |
+| [R.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-raii) | Manage resources automatically using resource handles and RAII (Resource Acquisition Is Initialization) |
+| [R.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-ptr) | A raw pointer (a `T*`) is non-owning |
+| [R.10](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-mallocfree) | Avoid `malloc()` and `free()` |
+| [R.12](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-immediate-alloc) | Immediately give the result of an explicit resource allocation to a manager object |
+| [R.30](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-smartptrparam) | Take smart pointers as parameters only to explicitly express lifetime semantics |
+| [SF.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rs-file-suffix) | Use a `.cpp` suffix for code files and `.h` for interface files if your project doesn't already follow another convention |
+| [SF.9](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rs-cycles) | Avoid cyclic dependencies among source files |
+| [SF.10](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rs-implicit) | Avoid dependencies on implicitly `#include`d names |
+| [SF.12](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rs-incform) | Prefer the quoted form of `#include` for files relative to the including file and the angle bracket form everywhere else |
+| [SL.con.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rsl-arrays) | Prefer using STL `array` or `vector` instead of a C array |
+| [SL.con.4](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rsl-copy) | don't use `memset` or `memcpy` for arguments that are not trivially-copyable |
+| [SL.io.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rio-low) | Use character-level input only when you have to |
+| [SL.io.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rio-validate) | When reading, always consider ill-formed input |
+| [SL.io.3](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rio-streams) | Prefer `iostream`s for I/O |
+| [SL.io.50](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rio-endl) | Avoid `endl` |
+| [SL.str.1](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rstr-string) | Use `std::string` to own character sequences |
+| [SL.str.2](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rstr-view) | Use `std::string_view` or `gsl::span<char>` to refer to character sequences |
+| [T.10](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rt-concepts) | Specify concepts for all template arguments |
+| [T.11](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rt-std-concepts) | Whenever possible use standard concepts |
+| [T.47](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rt-visible) | Avoid highly visible unconstrained templates with common names |
+| [T.144](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rt-specialize-function) | Don't specialize function templates |
+
+**Scott Meyers, *Effective Modern C++* (O'Reilly, 2014), ISBN 978-1-491-90399-5** — author's page: https://www.aristeia.com/books.html
+
+- Item 10: Prefer scoped enums to unscoped enums (ch. 3)
+- Item 15: Use constexpr whenever possible (ch. 3)
+- Item 16: Make const member functions thread safe (ch. 3)
+- Item 17: Understand special member function generation (ch. 3)
+- Item 21: Prefer std::make_unique and std::make_shared to direct use of new (ch. 4)
+- Item 31: Avoid default capture modes (ch. 6)
+- Item 41: Consider pass by value for copyable parameters that are cheap to move and always copied (ch. 8)
+
+**Scott Meyers, *Effective C++*, 3rd ed. (Addison-Wesley, 2005), ISBN 978-0-321-33487-9** — author's page: https://www.aristeia.com/books.html
+
+- Item 3: Use const whenever possible
+- Item 4: Make sure that objects are initialized before they're used
+- Item 6: Explicitly disallow the use of compiler-generated functions you do not want
+- Item 9: Never call virtual functions during construction or destruction
+- Item 13: Use objects to manage resources
+- Item 28: Avoid returning "handles" to object internals
+- Item 31: Minimize compilation dependencies between files
+- Item 53: Pay attention to compiler warnings
+
+**Scott Meyers, *Effective STL* (Addison-Wesley, 2001), ISBN 978-0-201-74962-5** — author's page: https://www.aristeia.com/books.html
+
+- Item 4: Call empty instead of checking size() against zero
+- Item 45: Distinguish among count, find, binary_search, lower_bound, upper_bound, and equal_range
+
+**Herb Sutter & Andrei Alexandrescu, *C++ Coding Standards: 101 Rules, Guidelines, and Best Practices* (Addison-Wesley, 2004), ISBN 978-0-321-11358-0**
+
+- Item 0: Don't sweat the small stuff. (Or: Know what not to standardize.)
+- Item 1: Compile cleanly at high warning levels
+- Item 2: Use an automated build system
+- Item 5: Give one entity one cohesive responsibility
+- Item 13: Ensure resources are owned by objects. Use explicit RAII and smart pointers
+- Item 17: Avoid magic numbers
+- Item 18: Declare variables as locally as possible
+- Item 19: Always initialize variables
+- Item 22: Minimize definitional dependencies. Avoid cyclic dependencies
+- Item 41: Make data members private, except in behaviorless aggregates (C-style structs)
+- Item 48: In constructors, prefer initialization to assignment
+- Item 52: Copy and destroy consistently
+- Item 53: Explicitly enable or disable copying
+- Item 66: Don't specialize function templates
+- Item 90: Avoid type switching; prefer polymorphism
+- Item 91: Rely on types, not on representations
+- Item 92: Avoid using reinterpret_cast
+
+**Abseil C++ Tips of the Week** — https://abseil.io/tips/
+
+- [#77: Temporaries, Moves, and Copies](https://abseil.io/tips/77)
+- [#94: Callsite Readability and bool Parameters](https://abseil.io/tips/94)
+- [#117: Copy Elision and Pass-by-value](https://abseil.io/tips/117)
+- [#134: make_unique and private Constructors](https://abseil.io/tips/134)
+- [#141: Beware Implicit Conversions to bool](https://abseil.io/tips/141)
+- [#144: Heterogeneous Lookup in Associative Containers](https://abseil.io/tips/144)
+- [#163: Passing std::optional parameters](https://abseil.io/tips/163)
+- [#188: Be Careful With Smart-Pointer Function Parameters](https://abseil.io/tips/188)
+
+**Google C++ Style Guide** — https://google.github.io/styleguide/cppguide.html
+
+- [Forward Declarations](https://google.github.io/styleguide/cppguide.html#Forward_Declarations)
+- [Function Names](https://google.github.io/styleguide/cppguide.html#Function_Names)
+- [Implicit Conversions](https://google.github.io/styleguide/cppguide.html#Implicit_Conversions)
+- [Include What You Use](https://google.github.io/styleguide/cppguide.html#Include_What_You_Use)
+- [Names and Order of Includes](https://google.github.io/styleguide/cppguide.html#Names_and_Order_of_Includes)
+- [The #define Guard](https://google.github.io/styleguide/cppguide.html#The__define_Guard)
+
+**LLVM Coding Standards** — https://llvm.org/docs/CodingStandards.html
+
+- [Comment Formatting ("Commenting out large blocks of code is discouraged")](https://llvm.org/docs/CodingStandards.html#comment-formatting)
+- [Don't use else after a return](https://llvm.org/docs/CodingStandards.html#don-t-use-else-after-a-return)
+
+**SEI CERT C and C++ Coding Standards** — https://cmu-sei.github.io/secure-coding-standards/ (C rules apply to the C library calls gsdb makes)
+
+- [ERR30-C: Take care when reading errno](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/rules/error-handling-err/err30-c)
+- [ERR50-CPP: Do not abruptly terminate the program](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/exceptions-and-error-handling-err/err50-cpp)
+- [ERR62-CPP: Detect errors when converting a string to a number](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/exceptions-and-error-handling-err/err62-cpp)
+- [FIO51-CPP: Close files when they are no longer needed](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/input-output-fio/fio51-cpp)
+- [MEM50-CPP: Do not access freed memory](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/memory-management-mem/mem50-cpp)
+- [MSC12-C: Detect and remove code that has no effect or is never executed](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc12-c)
+- [MSC13-C: Detect and remove unused values](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc13-c)
+- [MSC54-CPP: A signal handler must be a plain old function](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/miscellaneous-msc/msc54-cpp)
+- [OOP50-CPP: Do not invoke virtual functions from constructors or destructors](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/object-oriented-programming-oop/oop50-cpp)
+- [POS54-C: Detect and handle POSIX library errors](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/rules/posix-pos/pos54-c)
+- [SIG30-C: Call only asynchronous-safe functions within signal handlers](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/rules/signals-sig/sig30-c)
+- [SIG31-C: Do not access shared objects in signal handlers](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/rules/signals-sig/sig31-c)
+- [STR37-C: Arguments to character-handling functions must be representable as an unsigned char](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/rules/characters-and-strings-str/str37-c)
+
+**Jason Turner et al., *C++ Best Practices*** — https://github.com/cpp-best-practices/cppbestpractices
+
+- [cppbestpractices, ch. 2 "Use the Tools Available", §§ LLVM-based tools / Static Analyzers](https://github.com/cpp-best-practices/cppbestpractices/blob/master/02-Use_the_Tools_Available.md#static-analyzers)
+- [cppbestpractices, ch. 2 "Use the Tools Available", § codespell](https://github.com/cpp-best-practices/cppbestpractices/blob/master/02-Use_the_Tools_Available.md#codespell)
+- [cppbestpractices, ch. 8 "Considering Performance", § Get rid of std::endl](https://github.com/cpp-best-practices/cppbestpractices/blob/master/08-Considering_Performance.md#get-rid-of-stdendl)
+- [cppbestpractices, ch. 8 "Considering Performance", § Forward Declare When Possible](https://github.com/cpp-best-practices/cppbestpractices/blob/master/08-Considering_Performance.md#forward-declare-when-possible)
+- [cppbestpractices, ch. 2 "Use the Tools Available", § Compilers → GCC / Clang (recommended warning flags)](https://github.com/cpp-best-practices/cppbestpractices/blob/master/02-Use_the_Tools_Available.md#gcc--clang)
+
+**Reference documentation and articles**
+
+- [cppreference: Alternative operator representations (`and`, `or`, `not`)](https://en.cppreference.com/w/cpp/language/operator_alternative)
+- [cppreference: `std::as_bytes`](https://en.cppreference.com/w/cpp/container/span/as_bytes)
+- [cppreference: C++ library headers, "C compatibility headers" (`<cstdint>` guarantees `std::uint64_t`; the global `::uint64_t` is only "may also")](https://en.cppreference.com/w/cpp/header)
+- [CMake docs: `CMAKE_<LANG>_COMPILER` (set in a toolchain file or with `-D`)](https://cmake.org/cmake/help/latest/variable/CMAKE_LANG_COMPILER.html)
+- [CMake docs: `include_directories()` ("Prefer the `target_include_directories()` command")](https://cmake.org/cmake/help/latest/command/include_directories.html)
+- [CMake docs: `cmake-presets(7)`](https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html)
+- [cppreference: associative-container `contains` (C++20)](https://en.cppreference.com/w/cpp/container/unordered_multimap/contains)
+- [cppreference: `std::countr_zero` (C++20)](https://en.cppreference.com/w/cpp/numeric/countr_zero)
+- [cppreference: Explicit object member functions ("deducing `this`", C++23)](https://en.cppreference.com/w/cpp/language/member_functions#Explicit_object_member_functions)
+- [cppreference: Default comparisons (C++20; `!=` is rewritten from `==`, defaulted `<=>`)](https://en.cppreference.com/w/cpp/language/default_comparisons)
+- [cppreference: `EXIT_SUCCESS`, `EXIT_FAILURE`](https://en.cppreference.com/w/cpp/utility/program/EXIT_status)
+- [Herb Sutter, "Why Not Specialize Function Templates?" (C/C++ Users Journal, 2001)](http://www.gotw.ca/publications/mill17.htm)
+- [cppreference: `std::ignore`](https://en.cppreference.com/w/cpp/utility/tuple/ignore)
+- [cppreference: `std::isdigit` (UB unless the argument is representable as `unsigned char`)](https://en.cppreference.com/w/cpp/string/byte/isdigit)
+- [cppreference: `[[maybe_unused]]` attribute](https://en.cppreference.com/w/cpp/language/attributes/maybe_unused)
+- [Henry Schreiner et al., *An Introduction to Modern CMake*](https://cliutils.gitlab.io/modern-cmake/)
+- [cppreference: `[[nodiscard]]` attribute](https://en.cppreference.com/w/cpp/language/attributes/nodiscard)
+- [POSIX.1-2024 `fork()`: in a multi-threaded process the child may call only async-signal-safe functions until `exec` (`_exit` is one, `exit` is not)](https://pubs.opengroup.org/onlinepubs/9799919799/functions/fork.html)
+- [cppreference: `std::println` (C++23)](https://en.cppreference.com/w/cpp/io/println)
+- [cppreference: `std::ranges::to` (C++23)](https://en.cppreference.com/w/cpp/ranges/to)
+- [cppreference: `std::span` (C++20)](https://en.cppreference.com/w/cpp/container/span)
+- [cppreference: `std::views::split`](https://en.cppreference.com/w/cpp/ranges/split_view)
+- [cppreference: `std::basic_string::starts_with` (C++20)](https://en.cppreference.com/w/cpp/string/basic_string/starts_with)
+- [clang-tidy: `modernize-use-nodiscard`](https://clang.llvm.org/extra/clang-tidy/checks/modernize/use-nodiscard.html)
+- [clang-tidy: `readability-operators-representation`](https://clang.llvm.org/extra/clang-tidy/checks/readability/operators-representation.html)
+- [cppreference: `std::to_underlying` (C++23)](https://en.cppreference.com/w/cpp/utility/to_underlying)
+- [cppreference: `std::unreachable` (C++23)](https://en.cppreference.com/w/cpp/utility/unreachable)
