@@ -159,6 +159,9 @@ gsdb::typed_data parse_argument(gsdb::target& target, pid_t tid,
         if (!res.funcs.empty()) {
             gsdb::error::send("Nested function calls not supported!");
         }
+        if (!res.variable) {
+            gsdb::error::send("Unable to resolve variable!");
+        }
 
         return *res.variable;
     }
@@ -294,6 +297,9 @@ void setup_arguments(gsdb::target& target, gsdb::die func,
             // and passes a pointer to this memory as the first argument to the
             // function
             current_int_reg++;
+            if (!return_slot) {
+                gsdb::error::send("Empty return slot!");
+            }
             regs.write_by_id(int_regs[0], return_slot->addr(), true);
         }
     }
@@ -795,6 +801,9 @@ void gsdb::target::resolve_dynamic_linker_rendezvous() {
     if (dynamic_linker_rendezvous_address_.addr()) return;
 
     auto dynamic_section = main_elf_->get_section(".dynamic");
+    if (!dynamic_section) {
+        return;
+    }
     auto dynamic_start =
         file_addr{*main_elf_, dynamic_section.value()->sh_addr};
     auto dynamic_size = dynamic_section.value()->sh_size;
@@ -821,12 +830,15 @@ void gsdb::target::resolve_dynamic_linker_rendezvous() {
             reload_dynamic_libraries();
 
             auto debug_info = read_dynamic_linker_rendezvous();
+            if (!debug_info) {
+                gsdb::error::send("Empty debug info!");
+            }
             // `r_brk` member of the rendezvous structure holds pointer to
             // function `_dl_debug_state`
             auto debug_state_addr = virt_addr{debug_info->r_brk};
             auto& debug_state_bp =
                 create_address_breakpoint(debug_state_addr, false, true);
-            debug_state_bp.install_hit_handler([&] {
+            debug_state_bp.install_hit_handler([this] {
                 reload_dynamic_libraries();
                 return true;
             });
@@ -1166,6 +1178,9 @@ const gsdb::typed_data& gsdb::target::get_expression_result(
         gsdb::error::send("index out of bounds!");
     }
     auto& res = expression_results_[i];
+    if (!res.address()) {
+        gsdb::error::send("Empty expression result!");
+    }
     // The value in memory may have changed since the expression was executed
     // because a user may pass the result as a reference to a function call that
     // modifies it
