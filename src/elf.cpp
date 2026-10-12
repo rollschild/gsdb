@@ -20,35 +20,51 @@
 #include "libgsdb/dwarf.hpp"
 #include "libgsdb/types.hpp"
 
-gsdb::elf::elf(const std::filesystem::path& path) {
-    path_ = path;
+namespace {
+class unique_fd {
+   public:
+    explicit unique_fd(int fd) : fd_(fd) {}
+    ~unique_fd() {
+        if (fd_ >= 0) {
+            close(fd_);
+        }
+    }
+    unique_fd(const unique_fd&) = delete;
+    unique_fd& operator=(const unique_fd&) = delete;
 
-    if ((fd_ = open(path.c_str(), O_RDONLY)) < 0) {
+    int get() const { return fd_; }
+
+   private:
+    int fd_;
+};
+
+}  // namespace
+
+gsdb::elf::mapped_file::mapped_file(const std::filesystem::path& path) {
+    auto fd = unique_fd(open(path.c_str(), O_RDONLY));
+    if (fd.get() < 0) {
         error::send_errno("Could NOT open ELF file!");
     }
 
     struct stat stats;
-    if (fstat(fd_, &stats) < 0) {
+    if (fstat(fd.get(), &stats) < 0) {
         error::send_errno("Could NOT retrieve ELF file stats!");
     }
-    file_size_ = stats.st_size;
 
-    void* ret;
-
-    // Use mmap syscall to map the large file into the virtual memory of the
-    // process.
-    // First arg: 0 - instructs mmap to choose where to map this memory
-    // Last arg: 0 - offset; map the entire file
-    if ((ret = mmap(0, file_size_, PROT_READ, MAP_SHARED, fd_, 0)) ==
-        MAP_FAILED) {
-        close(fd_);
+    void* ret =
+        mmap(nullptr, stats.st_size, PROT_READ, MAP_SHARED, fd.get(), 0);
+    if (ret == MAP_FAILED) {
         error::send_errno("Could NOT mmap ELF file!");
     }
 
-    data_ = reinterpret_cast<std::byte*>(ret);
+    addr_ = ret;
+    size_ = stats.st_size;
+}
 
-    std::copy(data_, data_ + sizeof(header_), as_bytes(header_));
+gsdb::elf::mapped_file::~mapped_file() { munmap(addr_, size_); }
 
+gsdb::elf::elf(const std::filesystem::path& path)
+    : path_(path), map_(path), header_(from_bytes<Elf64_Ehdr>(map_.data())) {
     parse_section_headers();
 
     build_section_map();
@@ -60,23 +76,18 @@ gsdb::elf::elf(const std::filesystem::path& path) {
     dwarf_ = std::make_unique<dwarf>(*this);
 }
 
-gsdb::elf::~elf() {
-    // unmap the memory
-    munmap(data_, file_size_);
-    close(fd_);
-}
-
 void gsdb::elf::parse_section_headers() {
     // If a file has 0xff00 sections or more, it sets e_shnum to 0 and stores
     // the number of sections in the sh_size field of the first section header.
     auto n_headers = header_.e_shnum;
     // e_shentsize: the section header size element
     if (n_headers == 0 and header_.e_shentsize != 0) {
-        n_headers = from_bytes<Elf64_Shdr>(data_ + header_.e_shoff).sh_size;
+        n_headers =
+            from_bytes<Elf64_Shdr>(map_.data() + header_.e_shoff).sh_size;
     }
     section_headers_.resize(n_headers);
-    std::copy(data_ + header_.e_shoff,
-              data_ + header_.e_shoff + sizeof(Elf64_Shdr) * n_headers,
+    std::copy(map_.data() + header_.e_shoff,
+              map_.data() + header_.e_shoff + sizeof(Elf64_Shdr) * n_headers,
               reinterpret_cast<std::byte*>(section_headers_.data()));
 }
 
@@ -84,7 +95,8 @@ std::string_view gsdb::elf::get_section_name(std::size_t index) const {
     // e_shstrndx: identifies the section that stores the string table for
     // section names (usually `.shstrtab`)
     auto& section = section_headers_[header_.e_shstrndx];
-    return {reinterpret_cast<char*>(data_) + section.sh_offset + index};
+    return {reinterpret_cast<const char*>(map_.data()) + section.sh_offset +
+            index};
 }
 
 void gsdb::elf::build_section_map() {
@@ -105,7 +117,7 @@ std::optional<const Elf64_Shdr*> gsdb::elf::get_section(
 gsdb::span<const std::byte> gsdb::elf::get_section_contents(
     std::string_view name) const {
     if (auto sect = get_section(name); sect) {
-        return {data_ + sect.value()->sh_offset, sect.value()->sh_size};
+        return {map_.data() + sect.value()->sh_offset, sect.value()->sh_size};
     }
     return {nullptr, std::size_t(0)};
 }
@@ -118,8 +130,8 @@ std::string_view gsdb::elf::get_string(std::size_t index) const {
             return "";
         }
     }
-    return {reinterpret_cast<char*>(data_) + opt_strtab.value()->sh_offset +
-            index};
+    return {reinterpret_cast<const char*>(map_.data()) +
+            opt_strtab.value()->sh_offset + index};
 }
 
 const Elf64_Shdr* gsdb::elf::get_section_containing_address(
@@ -167,8 +179,8 @@ void gsdb::elf::parse_symbol_table() {
     auto symtab = *opt_symtab;
     // sh_entsize: size of a single entry
     symbol_table_.resize(symtab->sh_size / symtab->sh_entsize);
-    std::copy(data_ + symtab->sh_offset,
-              data_ + symtab->sh_offset + symtab->sh_size,
+    std::copy(map_.data() + symtab->sh_offset,
+              map_.data() + symtab->sh_offset + symtab->sh_size,
               reinterpret_cast<std::byte*>(symbol_table_.data()));
 }
 

@@ -23,7 +23,7 @@ class elf {
    public:
     // Takes path to an ELF file on disk
     elf(const std::filesystem::path& path);
-    ~elf();
+    // ~elf();
 
     elf(const elf&) = delete;
     elf& operator=(const elf&) = delete;
@@ -83,17 +83,33 @@ class elf {
     const dwarf& get_dwarf() const { return *dwarf_; }
 
     file_offset data_pointer_as_file_offset(const std::byte* ptr) const {
-        return file_offset(*this, ptr - data_);
+        return file_offset(*this, ptr - map_.data());
     }
     const std::byte* file_offset_as_data_pointer(file_offset offset) const {
-        return data_ + offset.off();
+        return map_.data() + offset.off();
     }
 
    private:
-    int fd_;
+    // int fd_;
+    class mapped_file {
+       public:
+        explicit mapped_file(const std::filesystem::path& path);
+        ~mapped_file();
+
+        mapped_file(const mapped_file&) = delete;
+        mapped_file& operator=(const mapped_file&) = delete;
+
+        const std::byte* data() const {
+            return static_cast<const std::byte*>(addr_);
+        }
+        std::size_t size() const { return size_; }
+
+       private:
+        void* addr_ = nullptr;
+        std::size_t size_ = 0;
+    };
     std::filesystem::path path_;
-    std::size_t file_size_;
-    std::byte* data_;
+    mapped_file map_;
     Elf64_Ehdr header_;
     std::vector<Elf64_Shdr> section_headers_;
     std::unordered_map<std::string_view, Elf64_Shdr*> section_map_;
