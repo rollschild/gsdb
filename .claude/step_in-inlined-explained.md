@@ -1,6 +1,6 @@
 # `target::step_in()` — the inlined-frame fast path explained
 
-Location: `src/target.cpp:544` (the early `if` block at lines 548–554)
+Location: `src/target.cpp:550` (the early `if` block at lines 554–560)
 
 ```cpp
 gsdb::stop_reason gsdb::target::step_in(std::optional<pid_t> otid) {
@@ -81,7 +81,7 @@ That's why it returns immediately with a synthetic `single_step` stop reason and
      │     return single_step  ───────────►   user now "inside" baz() (deepest)
      │
   step_in()  again, inline_height_ = 0
-     │     falls through to the REAL stepping logic below (line 557+)
+     │     falls through to the REAL stepping logic below (line 563+)
      │     actually single-steps machine instructions
 ```
 

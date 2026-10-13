@@ -164,8 +164,8 @@ Declared in `include/libgsdb/elf.hpp` and implemented in `src/elf.cpp`.
 
 Responsibilities:
 
-- owns the file descriptor
-- owns the `mmap` mapping
+- holds the file descriptor only while mapping the file (a local `unique_fd`, closed right after `mmap`)
+- owns the `mmap` mapping (through its `mapped_file` member, `map_`)
 - stores the copied ELF header
 - stores copied section headers
 - indexes sections by name
@@ -177,17 +177,12 @@ Responsibilities:
 Key fields:
 
 ```text
-fd_
-    open file descriptor for the ELF file
-
 path_
     filesystem path
 
-file_size_
-    size from fstat()
-
-data_
-    std::byte* pointing at the mmap'd file
+map_
+    mapped_file: owns the read-only mmap of the whole file
+    (size from fstat(); data() returns a const std::byte* to it)
 
 header_
     copied Elf64_Ehdr
@@ -279,16 +274,14 @@ The constructor `gsdb::elf::elf(path)` performs the whole parse/index setup:
 gsdb::elf(path)
     |
     v
-open(path, O_RDONLY)
+map_(path): the mapped_file constructor
+    open(path, O_RDONLY)                -> local unique_fd
+    fstat(fd)
+    mmap(file, PROT_READ, MAP_SHARED)
+    close(fd)                           -> the mapping keeps the file referenced
     |
     v
-fstat(fd)
-    |
-    v
-mmap(file, PROT_READ, MAP_SHARED)
-    |
-    v
-copy ELF header from data_[0]
+header_: copy ELF header from map_.data()
     |
     v
 parse_section_headers()
@@ -307,11 +300,15 @@ The object is RAII-style:
 
 ```text
 constructor:
-    open + fstat + mmap + parse
+    open + fstat + mmap + close (in mapped_file), then parse
 
-destructor:
-    munmap + close
+destructor (implicit):
+    members destroyed in reverse order; ~mapped_file() munmaps
 ```
+
+If parsing throws, C++ destroys the members that were already constructed, so `map_`
+still unmaps the file and a failed load leaks nothing. Before `e2dd85f` the fd and the
+mapping were plain members released only by `~elf()`, which a throwing constructor skips.
 
 This avoids reading the full file into a manually allocated buffer. Instead, the
 kernel maps the file into the debugger's address space, and the parser can treat
@@ -321,10 +318,11 @@ file bytes as memory.
 
 The ELF header is always at the start of the file.
 
-This code copies the first `sizeof(Elf64_Ehdr)` bytes into `header_`:
+The member-initializer list copies the first `sizeof(Elf64_Ehdr)` bytes into `header_`
+(`from_bytes<Elf64_Ehdr>(map_.data())`):
 
 ```text
-data_ ----------------------+
+map_.data() ----------------+
                             |
                             v
 +---------------------------+--------------------+
@@ -432,7 +430,7 @@ section header
     sh_size
         |
         v
-data_ + sh_offset, size sh_size
+map_.data() + sh_offset, size sh_size
 ```
 
 No copy is made for section contents. This is efficient, but it means returned
@@ -501,7 +499,7 @@ Once a symbol table section is found:
 
 ```text
 symbol count = sh_size / sh_entsize
-copy bytes from data_ + sh_offset into vector<Elf64_Sym>
+copy bytes from map_.data() + sh_offset into vector<Elf64_Sym>
 ```
 
 Each `Elf64_Sym` can describe a function, object, section, file, TLS object, and
@@ -621,7 +619,7 @@ print symbol name
 ```
 
 This check has since moved out of the CLI into
-`target::function_name_at_address()` (`src/target.cpp:763`), which first asks
+`target::function_name_at_address()` (`src/target.cpp:769`), which first asks
 DWARF for a function DIE and only falls back to the ELF symbol table:
 
 ```cpp
@@ -789,15 +787,14 @@ The `elf` object owns the mmap.
 ```text
 elf object alive
     |
-    +-- data_ valid
+    +-- map_.data() valid
     +-- string_view into section/string tables valid
     +-- span from get_section_contents() valid
     +-- section_map_ keys valid if backed by mmap
 
 elf object destroyed
     |
-    +-- munmap(data_)
-    +-- close(fd_)
+    +-- ~mapped_file(): munmap (the fd was already closed after mmap)
     +-- views into mapped file are invalid
 ```
 

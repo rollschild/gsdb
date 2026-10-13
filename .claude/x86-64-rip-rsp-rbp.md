@@ -409,12 +409,12 @@ directly, so no adjustment is applied.
 |---|---|
 | `get_pc()` / `set_pc()` wrappers over `%rip` | `include/libgsdb/process.hpp:146,150` |
 | Register table with DWARF numbers `rbp=6`, `rsp=7`, `rip=16` | `include/libgsdb/detail/registers.inc:34,35,44` |
-| Return address for `step out`: the caller frame's `%rip` from the CFI unwinder (until `ef32937` it was read from the `%rbp` chain at `8(%rbp)`) | `src/target.cpp:707-709` (`target::step_out`) |
+| Return address for `step out`: the caller frame's `%rip` from the CFI unwinder (until `ef32937` it was read from the `%rbp` chain at `8(%rbp)`) | `src/target.cpp:713-715` (`target::step_out`) |
 | `int3` PC rewind | `src/process.cpp:326-330` |
 | Long-form explanation of the rewind | `src/breakpoint_site.cpp:45-58` |
 | CIE / FDE / `.eh_frame_hdr` structures for CFI | `include/libgsdb/dwarf.hpp:30-95` |
 | CFI unwind producing the caller's registers | `include/libgsdb/dwarf.hpp:84` (`call_frame_information::unwind`), `src/stack.cpp:58` (`stack::unwind`) |
-| PC as a `file_addr` (bias-adjusted for DWARF lookup) | `src/target.cpp:526` |
+| PC as a `file_addr` (bias-adjusted for DWARF lookup) | `src/target.cpp:532` |
 
 Related notes: `x86-64-sub-registers.md`, `step_out-walkthrough.md`,
 `register-xmacro-explained.md`.

@@ -361,7 +361,7 @@ std::vector<std::size_t> undefined_;   // include/libgsdb/registers.hpp:61
 DWARF call-frame information can declare that a register has **no recoverable value** in a given
 frame — the `DW_CFA_undefined` rule (`detail/dwarf.h:529`, modeled as `undefined_rule` in
 `src/dwarf.cpp:639`). When the unwinder reconstructs a caller's frame it calls `undefine(id)`
-(`src/dwarf.cpp:894`), and
+(`src/dwarf.cpp:897`), and
 any later `read()` of that register throws (`src/registers.cpp:47-49`).
 
 The design question is **what to key that set on.**

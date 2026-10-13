@@ -152,10 +152,10 @@ onto the implementation:
 
 | # | Plan | Implementation | Location |
 |---|---|---|---|
-| 1 | Set an internal breakpoint on the real entry point; the linker is initialized when it hits | `target::launch` creates an internal `address_breakpoint` at `auxv[AT_ENTRY]` with a hit handler | `src/target.cpp:498-507` |
-| 2 | Walk the loaded-library list in the rendezvous structure, parse each ELF, add to a collection in `target`; dump the vDSO to disk | `reload_dynamic_libraries()` + `dump_vdso()` | `src/target.cpp:863-912`, `src/target.cpp:62-79` |
-| 3 | Set an internal breakpoint on `_dl_debug_state`, whose address is in `r_brk` | `resolve_dynamic_linker_rendezvous()` tail | `src/target.cpp:823-834` |
-| 4 | On each `_dl_debug_state` hit with `r_state == RT_CONSISTENT`, reread `r_map`, adding new libs and unloading removed ones | Handler calls `reload_dynamic_libraries()` — **no `r_state` check, no unload path** (see [§15](#15-gaps-deviations-and-observations)) | `src/target.cpp:829-832` |
+| 1 | Set an internal breakpoint on the real entry point; the linker is initialized when it hits | `target::launch` creates an internal `address_breakpoint` at `auxv[AT_ENTRY]` with a hit handler | `src/target.cpp:504-513` |
+| 2 | Walk the loaded-library list in the rendezvous structure, parse each ELF, add to a collection in `target`; dump the vDSO to disk | `reload_dynamic_libraries()` + `dump_vdso()` | `src/target.cpp:875-924`, `src/target.cpp:62-79` |
+| 3 | Set an internal breakpoint on `_dl_debug_state`, whose address is in `r_brk` | `resolve_dynamic_linker_rendezvous()` tail | `src/target.cpp:832-846` |
+| 4 | On each `_dl_debug_state` hit with `r_state == RT_CONSISTENT`, reread `r_map`, adding new libs and unloading removed ones | Handler calls `reload_dynamic_libraries()` — **no `r_state` check, no unload path** (see [§15](#15-gaps-deviations-and-observations)) | `src/target.cpp:841-844` |
 
 ---
 
@@ -200,9 +200,9 @@ typedef struct {
 own copy of `struct r_debug` / `struct link_map` is a legitimate stand-in for the
 inferior's. Pointer fields come back as *inferior* pointers, which is why the code
 immediately launders them through `reinterpret_cast<std::uint64_t>` into `virt_addr`
-rather than ever dereferencing them (`src/target.cpp:870`, `877`).
+rather than ever dereferencing them (`src/target.cpp:882`, `877`).
 
-### 4.2 `elf_collection` — `include/libgsdb/elf.hpp:150-178`
+### 4.2 `elf_collection` — `include/libgsdb/elf.hpp:166-194`
 
 A deliberately minimal owning container. No id space, no map, no ordering: three linear
 searches and a `for_each`.
@@ -227,7 +227,7 @@ Why three different lookups exist:
 | `get_elf_by_path` | `reload_dynamic_libraries()` dedup for normal libraries | `l_name` is an absolute path, so it round-trips exactly |
 | `get_elf_by_filename` | `reload_dynamic_libraries()` dedup for the **vDSO only** | the vDSO's `l_name` is the bare string `"linux-vdso.so.1"`, but the `elf` we built for it lives at `/tmp/gsdb-XXXXXX/linux-vdso.so.1`, so path equality can never match — basename equality can |
 
-The `for_each` templates are defined in the header (`elf.hpp:167-178`) because they are
+The `for_each` templates are defined in the header (`elf.hpp:183-194`) because they are
 templates; both a mutable and a `const` overload exist so `const` methods like
 `target::find_functions()` and `target::get_line_entries_by_line()` can iterate.
 
@@ -300,7 +300,7 @@ The two entry points reach the same state by different routes, because a freshly
 process has *not* run the dynamic linker yet, whereas an already-running process has.
 
 ```
-┌──────────────────────── target::launch (src/target.cpp:490-509) ──────────────────────┐
+┌──────────────────────── target::launch (src/target.cpp:496-515) ──────────────────────┐
 │                                                                                       │
 │  process::launch(path, debug=true, stdout_replacement)                                │
 │      └─ fork → PTRACE_TRACEME → execlp → SIGTRAP → wait_on_signal()                   │
@@ -323,7 +323,7 @@ process has *not* run the dynamic linker yet, whereas an already-running process
 │  return tgt   ── rendezvous NOT yet resolved; happens on the first resume ──           │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────── target::attach (src/target.cpp:511-524) ───────────────────────┐
+┌──────────────────────── target::attach (src/target.cpp:517-530) ───────────────────────┐
 │                                                                                       │
 │  elf_path = /proc/<pid>/exe          (symlink to the real binary)                      │
 │  process::attach(pid)                (PTRACE_ATTACH → SIGSTOP → wait_on_signal)        │
@@ -345,7 +345,7 @@ behavior, demonstrated in [§14](#14-verified-behavior).
 
 ## 6. Phase 2 — `resolve_dynamic_linker_rendezvous()`
 
-`src/target.cpp:793-837`. Runs once (idempotent via the guard on line 348).
+`src/target.cpp:799-849`. Runs once (idempotent via the guard on line 801).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
@@ -355,6 +355,7 @@ behavior, demonstrated in [§14](#14-verified-behavior).
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │ 2. LOCATE .dynamic IN THE FILE, THEN PROJECT IT INTO THE INFERIOR                    │
 │    main_elf_->get_section(".dynamic")            → const Elf64_Shdr*                 │
+│    if (!dynamic_section) return;                 ── no .dynamic (static binary)       │
 │    dynamic_start = file_addr{*main_elf_, sh_addr}                                    │
 │    dynamic_size  = sh_size                                                           │
 │    read_memory(dynamic_start.to_virt_addr(), dynamic_size)                            │
@@ -369,9 +370,10 @@ behavior, demonstrated in [§14](#14-verified-behavior).
 │        dynamic_linker_rendezvous_address_ = virt_addr{entry.d_un.d_ptr};   ◄── &r_debug│
 │        reload_dynamic_libraries();                       ← STEP 2 of the plan         │
 │        auto debug_info = read_dynamic_linker_rendezvous();                            │
+│        if (!debug_info) error::send("Empty debug info!");                             │
 │        auto debug_state_addr = virt_addr{debug_info->r_brk};   ← &_dl_debug_state     │
 │        auto& bp = create_address_breakpoint(debug_state_addr, false, /*internal=*/true)│
-│        bp.install_hit_handler([&] { reload_dynamic_libraries(); return true; });       │
+│        bp.install_hit_handler([this] { reload_dynamic_libraries(); return true; });   │
 │        bp.enable();                                      ← STEP 3 of the plan         │
 │    }                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────────┘
@@ -421,7 +423,7 @@ a no-op nop-hook so that debuggers have somewhere to trap.
 
 ## 7. Phase 3 — `reload_dynamic_libraries()`
 
-`src/target.cpp:863-912`. This is the workhorse; it is called from Phase 2 once and from
+`src/target.cpp:875-924`. This is the workhorse; it is called from Phase 2 once and from
 the `_dl_debug_state` handler on every subsequent load.
 
 ```
@@ -765,9 +767,9 @@ to answer that question when starting from a raw runtime PC.
   virt_addr  (what ptrace gives you: 0x7ffff7fb60fd)
       │
       │  to_file_addr(const elf_collection&)      src/types.cpp:26-31    ← NEW
-      │      └─ elves.get_elf_containing_address(*this)   src/elf.cpp:282-291
+      │      └─ elves.get_elf_containing_address(*this)   src/elf.cpp:294-303
       │             └─ for each elf: elf->get_section_containing_address(virt_addr)
-      │                                    src/elf.cpp:140-150
+      │                                    src/elf.cpp:152-162
       │                       └─ addr >= bias + sh_addr && addr < bias + sh_addr + sh_size
       │      └─ if none → file_addr{}  (null elf_, addr 0)
       │      └─ else → to_file_addr(*obj)
@@ -792,11 +794,11 @@ Three call sites were switched from the single-ELF form to the collection form �
 three switches are what actually make shared-library debugging work:
 
 ```diff
-  // src/target.cpp:526-529
+  // src/target.cpp:532-535
 - return process_->get_pc().to_file_addr(*elf_);
 + return process_->get_pc().to_file_addr(elves_);
 
-  // src/target.cpp:765  (function_name_at_address)
+  // src/target.cpp:771  (function_name_at_address)
 - auto file_address = address.to_file_addr(*elf_);
 + auto file_address = address.to_file_addr(elves_);
 
@@ -846,7 +848,7 @@ to no tracked object, which is the real "we've run off the end" signal.
 Five functions had to learn about `elves_`. Note the shape they all share: an
 `elves_.for_each` that accumulates across objects, replacing a single-object query.
 
-### 11.1 `target::find_functions` — `src/target.cpp:723-741`
+### 11.1 `target::find_functions` — `src/target.cpp:729-747`
 
 ```diff
 - auto dwarf_found = elf_->get_dwarf().find_functions(name);
@@ -881,7 +883,7 @@ with *its own* object so `to_virt_addr()` applies *that library's* bias. Without
 the `elf*` through the result, every symbol would be biased by the main executable's load
 address.
 
-### 11.2 `target::get_line_entries_by_line` — `src/target.cpp:842-853` (new)
+### 11.2 `target::get_line_entries_by_line` — `src/target.cpp:854-865` (new)
 
 ```cpp
 std::vector<gsdb::line_table::iterator> gsdb::target::get_line_entries_by_line(
@@ -933,7 +935,7 @@ The body was already correct for shared libraries — the existing comment says 
 and prologue-skip logic, and `entry->address.to_virt_addr()` applies the *right* bias. The
 work in this commit was to feed that already-correct body from all objects instead of one.
 
-### 11.4 `target::function_name_at_address` — `src/target.cpp:763-791`
+### 11.4 `target::function_name_at_address` — `src/target.cpp:769-797`
 
 Now qualifies every name with the owning object:
 
@@ -970,7 +972,7 @@ This is why the `[target]` stepping test assertions had to be updated from `"mai
 
 Two regressions hitched a ride here, both flagged in [§15](#15-gaps-deviations-and-observations):
 the `__cxa_demangle` call was commented out (so ELF-symbol names now surface **mangled**),
-and `elf_name` at `src/target.cpp:780` is now a dead local.
+and `elf_name` at `src/target.cpp:786` is now a dead local.
 
 ### 11.5 `target`'s new public accessors — `include/libgsdb/target.hpp:126-132`
 
@@ -1327,7 +1329,7 @@ legal; `-gdwarf-4` matches the parser's hard version constraint. The DWARF reade
 anything else (`src/dwarf.cpp:447-453`: *"Only DWARF32 is supported!"*, *"Only DWARF
 version 4 is supported!"*, *"Invalid address size for DWARF!"*) from `parse_compile_units`,
 which the `dwarf` constructor calls eagerly, which the `elf` constructor calls at
-`src/elf.cpp:60`. So **a library built with `-gdwarf-5` would make `new elf(path)` throw
+`src/elf.cpp:76`. So **a library built with `-gdwarf-5` would make `new elf(path)` throw
 out of `reload_dynamic_libraries()`** — i.e. out of a breakpoint hit handler, i.e. out of
 `wait_on_signal`. On this system that does not bite, because the Nix-store system libraries
 carry no `.debug_info` at all, so there are no compile units to reject.
@@ -1354,7 +1356,7 @@ Ordered by how much they matter.
 the `r_state` member of the rendezvous structure is `RT_CONSISTENT`**, reread `r_map`,
 adding any new shared libraries **and unloading any ones that were removed**."*
 
-Neither clause is implemented. `reload_dynamic_libraries()` (`src/target.cpp:863-912`)
+Neither clause is implemented. `reload_dynamic_libraries()` (`src/target.cpp:875-924`)
 reads `r_debug` but ignores `r_state`, and has no removal logic at all.
 
 Consequences:
@@ -1384,7 +1386,7 @@ Consequences:
 
 ### 15.2 `__cxa_demangle` was disabled in `function_name_at_address`
 
-`src/target.cpp:780-783`:
+`src/target.cpp:786-789`:
 
 ```cpp
 auto elf_name = std::string{obj->get_string(elf_func.value()->st_name)};   // now dead
@@ -1401,7 +1403,7 @@ The commented-out version also had a latent bug worth preserving in memory: it r
 `char*` from `__cxa_demangle` directly into a `std::string` return value, **leaking** the
 malloc'd buffer, and would have returned `nullptr` (UB on `std::string` construction) for
 any name that failed to demangle — which is every plain C symbol. `elf::build_symbol_maps`
-(`src/elf.cpp:182-188`) shows the correct pattern: check `demangle_status == 0`, then
+(`src/elf.cpp:194-200`) shows the correct pattern: check `demangle_status == 0`, then
 `free()`. (It is only correct since `fd6be79`: `symbol_name_map_` now keys on `std::string`,
 so the insert copies the name before `free()`. Before that the key was a `string_view` into
 the freed buffer; see bug-audit C1.)
@@ -1411,7 +1413,7 @@ the freed buffer; see bug-audit C1.)
 
 ### 15.3 `bp.resolve()` is inside the link-map loop
 
-`src/target.cpp:910` sits inside the `while (entry_ptr != nullptr)` body. With 7 libraries
+`src/target.cpp:922` sits inside the `while (entry_ptr != nullptr)` body. With 7 libraries
 and *B* breakpoints, `resolve()` runs 7·*B* times per reload instead of *B*. Every
 `resolve()` override re-runs `find_functions` (which is `elves_.for_each` × DWARF index
 lookup) or `get_line_entries_by_line` (which is `elves_ × compile_units × line-table
@@ -1430,7 +1432,7 @@ recurse too (`return wait_on_signal(-1);`, `src/process.cpp:471`). Converting
 
 ### 15.5 `read_memory(name_addr, 4096)` over-reads
 
-`src/target.cpp:879` unconditionally requests 4096 bytes for a NUL-terminated path.
+`src/target.cpp:891` unconditionally requests 4096 bytes for a NUL-terminated path.
 `process::read_memory` (`src/process.cpp:714-725`) splits the request at page boundaries
 into multiple remote `iovec`s, and `process_vm_readv` only returns `-1` if the *first*
 iovec fails — so a string near the end of a mapping yields a short read rather than an
@@ -1462,7 +1464,7 @@ plus an `if (!mkdtemp(tmp_dir)) error::send_errno(...)` would tidy this.
 
 ### 15.7 `get_elf_containing_address` scans non-allocated sections
 
-`elf::get_section_containing_address(virt_addr)` (`src/elf.cpp:140-150`) loops **all**
+`elf::get_section_containing_address(virt_addr)` (`src/elf.cpp:152-162`) loops **all**
 section headers with no `SHF_ALLOC` filter. Sections like `.debug_info`, `.symtab`, and
 `.comment` have `sh_addr == 0`, so they claim the range
 `[load_bias, load_bias + sh_size)` — which is inside that object's own first `LOAD`
@@ -1476,9 +1478,14 @@ runs on **every single stop and every single instruction step**. For 8 objects a
 sections that is ~240 comparisons per step. An interval tree, or just caching the last hit,
 would matter for `step_over` across a long line.
 
-### 15.8 `resolve_dynamic_linker_rendezvous` assumes `.dynamic` exists
+### 15.8 `resolve_dynamic_linker_rendezvous` assumes `.dynamic` exists (fixed)
 
-`src/target.cpp:797-800` calls `dynamic_section.value()` on the `std::optional` without
+**Fixed in `30b19d3`**, which added the early `if (!dynamic_section) return;`
+(`src/target.cpp:804-806`). Checked on 2026-10-12: a `-static -nostdlib` binary linked with
+`--eh-frame-hdr` now launches and runs to exit. Without `--eh-frame-hdr`, a static binary
+still crashes earlier, in `parse_eh_hdr` (bug-audit C10). The original problem, for reference:
+
+`src/target.cpp:803-809` called `dynamic_section.value()` on the `std::optional` without
 checking. Debugging a **statically linked** executable — which has no `.dynamic` section —
 throws `std::bad_optional_access` out of `target::launch`'s hit handler, i.e. out of
 `wait_on_signal`. An early `if (!dynamic_section) return;` would make static binaries work
@@ -1488,25 +1495,25 @@ so this fires on the first `continue` of *any* static binary.
 ### 15.9 The entry-point breakpoint is never removed
 
 After the rendezvous is resolved, the `int3` at `AT_ENTRY` stays patched forever, and its
-handler keeps firing (the idempotence guard at `src/target.cpp:795` makes it a no-op that
+handler keeps firing (the idempotence guard at `src/target.cpp:801` makes it a no-op that
 returns `true`). Costs one `int3` re-patch cycle on the vanishingly rare occasion that
 `AT_ENTRY` executes twice. Harmless, but a `breakpoints_.remove_by_id()` after first
 resolution would be tidier.
 
-### 15.10 Handler lambda capture styles differ
+### 15.10 Handler lambda capture styles differed (fixed)
 
 ```cpp
-// src/target.cpp:501 — explicit capture of a raw pointer
+// src/target.cpp:507 — explicit capture of a raw pointer
 entry_bp.install_hit_handler([target = tgt.get()] { … });
 
-// src/target.cpp:829 — implicit capture of `this` by reference
-debug_state_bp.install_hit_handler([&] { reload_dynamic_libraries(); return true; });
+// src/target.cpp:841 — `[&]` until `30b19d3`, now an explicit capture of `this`
+debug_state_bp.install_hit_handler([this] { reload_dynamic_libraries(); return true; });
 ```
 
 Both are safe here — `[&]` in a member function captures only `this`, and the `target`
 outlives every breakpoint it owns. But `[&]` reads as "captures the surrounding locals by
 reference", which would be a dangling-capture bug if the lambda ever touched
-`debug_state_addr` or `debug_info`. Writing `[this]` would make the intent unambiguous.
+`debug_state_addr` or `debug_info`. Writing `[this]` would make the intent unambiguous, and `30b19d3` did exactly that.
 
 ---
 
@@ -1553,7 +1560,7 @@ reference", which would be a dangling-capture bug if the lambda ever touched
 | Tag | Value | Meaning | Read by gsdb? |
 |---|---|---|---|
 | `DT_NEEDED` | 1 | name of a required library | no — the linker handles it |
-| `DT_DEBUG` | **21 (0x15)** | **runtime-written `&r_debug`** | **yes** — `src/target.cpp:817` |
+| `DT_DEBUG` | **21 (0x15)** | **runtime-written `&r_debug`** | **yes** — `src/target.cpp:826` |
 | `DT_PLTGOT` | 3 | GOT/PLT address | no |
 | `DT_FLAGS` | 30 | e.g. `BIND_NOW` | no |
 

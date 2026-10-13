@@ -1,6 +1,6 @@
 # `target::step_over()` — Explained
 
-Source: `src/target.cpp:640-689`
+Source: `src/target.cpp:646-695`
 
 Every helper takes the thread id `tid` (the current thread unless the caller
 passes one), and each exit path records the stop reason on that thread's state
@@ -42,7 +42,7 @@ PC currently sits:
    in one shot           at the return addr
 ```
 
-### (A) Inlined frame — `target.cpp:650-662`
+### (A) Inlined frame — `target.cpp:656-668`
 
 ```cpp
 auto inline_stack = stack.inline_stack_at_pc();
@@ -80,7 +80,7 @@ inlined body in a single `run_until_address`.
    skip target = frame_to_skip.high_pc()  ──►  one past the inlined body
 ```
 
-### (B) Real `call` instruction — `target.cpp:663-672`
+### (B) Real `call` instruction — `target.cpp:669-678`
 
 ```cpp
 } else if (auto instructions =
@@ -111,7 +111,7 @@ callee returns — stepping *over* it.
                   └─ run_until_address(─┘  ← run callee, stop here
 ```
 
-### (C) Ordinary instruction — `target.cpp:673-679`
+### (C) Ordinary instruction — `target.cpp:679-685`
 
 ```cpp
 } else {
@@ -127,7 +127,7 @@ Not a call, not an inline entry → just single-step one machine instruction.
 
 ---
 
-## `run_until_address()` — the "step over" primitive (`target.cpp:614-638`)
+## `run_until_address()` — the "step over" primitive (`target.cpp:620-644`)
 
 Both branch (A) and branch (B) lean on this helper:
 
@@ -172,7 +172,7 @@ yield control to the user if something more interesting happened mid-call.
 
 ---
 
-## The loop condition — `target.cpp:680-685`
+## The loop condition — `target.cpp:686-691`
 
 ```cpp
 } while ((line_entry_at_pc(tid) == orig_line or
@@ -196,7 +196,7 @@ real, non-end-sequence line entry**.
              keep going        keep going        keep going          STOP, return
 ```
 
-`line_entry_at_pc()` (`target.cpp:601-612`) maps the current PC (as a
+`line_entry_at_pc()` (`target.cpp:607-618`) maps the current PC (as a
 **file address**, bias-adjusted) to a line-table row inside the correct compile
 unit. It returns a default/empty iterator when there's no line info — which is
 the third condition's escape hatch.

@@ -1,6 +1,6 @@
 # `target::step_out()` walkthrough
 
-Location: `src/target.cpp:691-721`
+Location: `src/target.cpp:697-727`
 
 `step_out()` implements the "finish this function, stop in the caller" command. It has
 two paths: a virtual one for *inlined* functions (which have no real stack frame to
@@ -40,7 +40,7 @@ gsdb::stop_reason gsdb::target::step_out(std::optional<pid_t> otid) {
 }
 ```
 
-## Setup: figuring out where we are (lines 692–696)
+## Setup: figuring out where we are (lines 698–702)
 
 ```cpp
 auto tid = otid.value_or(process_->current_thread());
@@ -74,7 +74,7 @@ inlined code.) The outermost frame is at height `size - 1`, so `height < size - 
 means the user's current conceptual frame is one of the inlined ones — not the physical
 function.
 
-## Path 1: stepping out of an inlined function (lines 698–703)
+## Path 1: stepping out of an inlined function (lines 704–709)
 
 An inlined function has no `call`/`ret` and no frame of its own — its instructions are
 spliced into the caller's body. So "step out" can't pop a stack frame; instead:
@@ -103,7 +103,7 @@ random base).
 return run_until_address(return_address, tid);
 ```
 
-`run_until_address()` (`src/target.cpp:614`) plants a temporary *internal* breakpoint
+`run_until_address()` (`src/target.cpp:620`) plants a temporary *internal* breakpoint
 at the address (unless one already exists there), resumes, waits for the stop, relabels
 the trap as `single_step` if we stopped at the expected spot (so the CLI reports it
 like a step rather than a breakpoint hit), and removes the temporary breakpoint.
@@ -112,7 +112,7 @@ like a step rather than a breakpoint hit), and removes the temporary breakpoint.
 ending at `high_pc`. If the compiler scattered it (`DW_AT_ranges`) or execution leaves
 the range early, this heuristic can miss — a known limitation of the simple approach.
 
-## Path 2: stepping out of a real function (lines 705–720)
+## Path 2: stepping out of a real function (lines 711–726)
 
 ```cpp
 auto& regs = stack.frames()[stack.current_frame_index() + 1].regs;
@@ -224,6 +224,6 @@ the return address in the caller, and report the stop.
 ## Why not just breakpoint the return address in both cases?
 
 Because for an inlined "call" there *is* no return address on the stack — the whole
-point of the branch at line 698 is that inline frames are a fiction reconstructed from
+point of the branch at line 704 is that inline frames are a fiction reconstructed from
 DWARF, so stepping out of one is simulated by running to the end of its code range,
 while stepping out of a real frame uses the genuine saved return address.

@@ -140,7 +140,7 @@ Iteration 2 handles `main`'s physical frame and emits `frames_[3]`.
 
 ### 4.1 `inline_stack_at_address()` ordering
 
-`dwarf::inline_stack_at_address()` (`src/dwarf.cpp:1662`) starts from the
+`dwarf::inline_stack_at_address()` (`src/dwarf.cpp:1665`) starts from the
 concrete `DW_TAG_subprogram` containing the address, then repeatedly descends
 into whichever `DW_TAG_inlined_subroutine` child also contains the address:
 
@@ -251,7 +251,7 @@ take both from one row and they cannot.
 
 **How the lookup works.** `dwarf::line_entry_at_address`
 (`include/libgsdb/dwarf.hpp:467-471`) finds the CU containing the address, then
-calls `line_table::get_entry_by_address` (`src/dwarf.cpp:1604-1620`), which
+calls `line_table::get_entry_by_address` (`src/dwarf.cpp:1607-1623`), which
 walks the rows looking for the pair where `prev->address <= address <
 it->address` and `prev` is not an `end_sequence` marker. So it returns the row
 whose address range *covers* the pc — a containment query, not an exact match,
@@ -259,8 +259,8 @@ which is exactly right for a pc pointing into the middle of a row's code.
 
 **The `!= line_table::iterator{}` guard.** The lookup can fail two ways: no CU
 contains the address (`dwarf.hpp:469` returns `{}`), or the walk falls off the
-end (`src/dwarf.cpp:1619` returns `end()`). `line_table::end()` is literally
-`return {}` (`src/dwarf.cpp:1478`), and `operator==` compares only `pos_`
+end (`src/dwarf.cpp:1622` returns `end()`). `line_table::end()` is literally
+`return {}` (`src/dwarf.cpp:1481`), and `operator==` compares only `pos_`
 (`dwarf.hpp:406`), which value-initialization zeroes to `nullptr`. So
 `line_entry != line_table::iterator{}` is a comparison against `end()` written
 longhand — "did the lookup find a row?" On failure `backtrace_pc` keeps the raw
@@ -338,7 +338,7 @@ simulates it with a counter.
 `stack::simulate_inlined_step_in()` just does `--inline_height_`, which slides
 the window one frame deeper — the user appears to step into `bar`, then `baz`,
 without a single instruction being executed. `target::step_in()`
-(`src/target.cpp:544`) takes that shortcut before touching `ptrace`.
+(`src/target.cpp:550`) takes that shortcut before touching `ptrace`.
 
 `unwind()` sets `current_frame_ = inline_height_` (line 61) so the selected
 frame is the first *visible* one.
@@ -380,7 +380,7 @@ the address actually printed.
 ## 7. The CFI step: `dwarf.cfi().unwind(...)`
 
 Line 104 is where one physical frame is popped. Implementation:
-`gsdb::call_frame_information::unwind` (`src/dwarf.cpp:1762`).
+`gsdb::call_frame_information::unwind` (`src/dwarf.cpp:1765`).
 
 ```
  file_pc
@@ -439,7 +439,7 @@ The CFI byte stream is a program that builds one *row* of a conceptual table:
 `ctx.rule_stack` — compilers emit these around epilogues and cold paths.
 The `DW_CFA_*expression` opcodes now produce the expression rules above, but
 `DW_CFA_expression` and `DW_CFA_val_expression` store each other's rule type
-(`src/dwarf.cpp:822, 832`; bug-audit M1).
+(`src/dwarf.cpp:824, 835`; bug-audit M1).
 
 ### 7.2 CFA and the frame boundary
 
@@ -474,7 +474,7 @@ Typical x86-64 CIE + prologue for a frame-pointer function:
    movq %rsp,%rbp DW_CFA_def_cfa_register r6             ; CFA = rbp + 16
 ```
 
-`execute_unwind_rules` (`src/dwarf.cpp:856`) then does:
+`execute_unwind_rules` (`src/dwarf.cpp:859`) then does:
 
 ```cpp
 cfa = old_regs[cfa_rule.reg] + cfa_rule.offset;
@@ -587,7 +587,7 @@ Per halt:
 - DIE-tree descent per frame for the inline stack, plus the lazily built
   `function_index_` on first use.
 
-Called from `target::notify_stop()` (`src/target.cpp:536`), i.e. after *every*
+Called from `target::notify_stop()` (`src/target.cpp:542`), i.e. after *every*
 stop — including every single instruction of a source-level `step`. This is the
 main reason `step_in`/`step_over` loops feel slow on large binaries.
 
@@ -610,7 +610,7 @@ source; the rest still apply.
 2. **`ctx.register_rules.emplace(...)` never overwrites.**
    `std::unordered_map::emplace` is a no-op when the key already exists, yet
    every rule-setting opcode in `execute_cfi_instruction`
-   (`src/dwarf.cpp:686-854`) uses it (bug-audit M2). Per the DWARF spec a later row must
+   (`src/dwarf.cpp:686-857`) uses it (bug-audit M2). Per the DWARF spec a later row must
    *replace* an earlier rule for the same register. As written, `DW_CFA_restore`
    / `DW_CFA_restore_extended` cannot undo an earlier `DW_CFA_offset`, and a
    register saved to a new slot mid-function keeps the stale rule. Functions
@@ -655,10 +655,10 @@ source; the rest still apply.
 | --- | --- |
 | `unwind()`, frame construction | `src/stack.cpp:58-152` |
 | `stack` / `stack_frame` definitions | `include/libgsdb/stack.hpp` |
-| CFI driver | `src/dwarf.cpp:1762` (`call_frame_information::unwind`) |
-| `.eh_frame_hdr` binary search | `src/dwarf.cpp:1712` (`eh_hdr::operator[]`) |
+| CFI driver | `src/dwarf.cpp:1765` (`call_frame_information::unwind`) |
+| `.eh_frame_hdr` binary search | `src/dwarf.cpp:1715` (`eh_hdr::operator[]`) |
 | CFI opcode interpreter | `src/dwarf.cpp:686` (`execute_cfi_instruction`) |
-| Rule application | `src/dwarf.cpp:856` (`execute_unwind_rules`) |
-| Inline stack from DIEs | `src/dwarf.cpp:1662` (`inline_stack_at_address`) |
-| Stop hook that drives it all | `src/target.cpp:536` (`target::notify_stop`) |
+| Rule application | `src/dwarf.cpp:859` (`execute_unwind_rules`) |
+| Inline stack from DIEs | `src/dwarf.cpp:1665` (`inline_stack_at_address`) |
+| Stop hook that drives it all | `src/target.cpp:542` (`target::notify_stop`) |
 | Pointer-encoding background | `.claude/got-plt-and-eh-frame-pointer-encodings.md` |

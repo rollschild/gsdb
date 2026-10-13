@@ -9,7 +9,7 @@ undefined reference to `gsdb::die::contains(unsigned long) const'
 ```
 
 referenced from `as_range_list()`, `low_pc()`, `high_pc()` in `src/dwarf.cpp`
-(now `src/dwarf.cpp:1218`, `1223`, `1230`, `1237`, `1302`).
+(now `src/dwarf.cpp:1221`, `1223`, `1230`, `1237`, `1302`).
 
 ## Root cause
 
@@ -24,8 +24,8 @@ This is a missing-definition error, not a CMake/linker-flags problem.
 
 ## Resolution (applied)
 
-The definition now exists in `src/dwarf.cpp:1057`, immediately before
-`operator[]` (`src/dwarf.cpp:1064`):
+The definition now exists in `src/dwarf.cpp:1060`, immediately before
+`operator[]` (`src/dwarf.cpp:1067`):
 
 ```cpp
 bool gsdb::die::contains(std::uint64_t attribute) const {

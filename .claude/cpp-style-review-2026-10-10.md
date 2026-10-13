@@ -2,7 +2,7 @@
 
 Date: 2026-10-10   Reviewer: Claude (`cpp-style-review` skill)   Scope: style/best practices only (no bug or security hunt)
 
-This is the second review. The first one, `.claude/cpp-style-review-2026-09-06.md`, was written against `4915d55`; its line numbers were re-synced to the current tree today, so every location there is valid against HEAD (`74d1d4b`). This report does two things:
+This is the second review. The first one, `.claude/cpp-style-review-2026-09-06.md`, was written against `4915d55`; its line numbers were re-synced to the current tree today, so every location there is valid against HEAD (`74d1d4b`). Both reports were re-synced again on 2026-10-12 against `d5b66d8`; findings fixed since then are marked in §5.0 and in their sections. This report does two things:
 
 1. It re-checks all 63 findings from September (§5.0).
 2. It reviews the roughly 2,700 lines added since `4915d55`: the type layer (`type.hpp`, `type.cpp`), variables, inferior calls and expression evaluation, CFI expression rules, thread-aware stepping, and the bug-audit fixes.
@@ -12,18 +12,18 @@ New findings continue the numbering at **#64**, so every ID is unique across bot
 ## 1. Executive summary
 
 - **New findings: 10.** None is a must, 8 are should, and 2 are consider. The new code follows the same conventions as the rest of the library. The new problems are mostly copy-paste, parameter passing, and the way "which thread" is chosen.
-- **Earlier findings:** of 63, 1 is fixed (#2), 1 is partly fixed (#11), and 61 are still open. 23 of them have new sites in the new code; §5.0 lists them.
+- **Earlier findings:** of 63, 1 is fixed (#2), 1 is partly fixed (#11), and 61 are still open. As of `d5b66d8`, #1, #3 and #7 are also fixed, and the `elf` rewrite partly fixes #16, #17, #21 and #28. 23 of them have new sites in the new code; §5.0 lists them.
 - **Top items, in order of attention:**
-  1. **#7 (must, open, now 3 sites).** Stored hit-handler lambdas capture `[&]`. Two new ones are at `src/target.cpp:1117` and `:1147`; they capture nothing, so `[]` is enough.
-  2. **#64 (should).** `std::optional` values are dereferenced without a check in 5 places. In one of them, `variable read foo(` reads through an empty optional at `tools/gsdb.cpp:957`.
-  3. **#67 (should).** The CFI expression parser is copy-pasted three times (`src/dwarf.cpp:767-834`). The copies swapped `expr_rule`/`val_expr_rule` (bug-audit M1), and none of them moves the cursor past the expression. That second problem is an `[sdb]` latent bug that is not in the bug audit. The same finding covers the duplicated `DW_AT_defaulted` test behind bug-audit H11a.
+  1. **#7 (must, open, now 3 sites).** Stored hit-handler lambdas capture `[&]`. Two new ones are at `src/target.cpp:1129` and `:1159`; they capture nothing, so `[]` is enough. **Fixed:** `4238b04` made the two new ones `[]`, and `30b19d3` made the original one `[this]`.
+  2. **#64 (should).** `std::optional` values are dereferenced without a check in 5 places. In one of them, `variable read foo(` reads through an empty optional at `tools/gsdb.cpp:961`. **Fixed in `30b19d3`:** all five sites now check first.
+  3. **#67 (should).** The CFI expression parser is copy-pasted three times (`src/dwarf.cpp:767-837`). The copies swapped `expr_rule`/`val_expr_rule` (bug-audit M1), and none of them moves the cursor past the expression. That second problem is an `[sdb]` latent bug that is not in the bug audit (fixed in `573b355`). The same finding covers the duplicated `DW_AT_defaulted` test behind bug-audit H11a.
   4. **#65 (should).** 22 functions take a defaulted `std::optional<pid_t> otid = std::nullopt`. Calls that leave it out silently use the current thread. Bug-audit M7 and M11, and the `get_pc()` call in `step_out`, all come from this.
   5. **#69 (should).** `target::get_expression_result()` is `const` but rewrites the stored result through a `mutable` vector.
   6. **#68 (should).** `gsdb::die` holds a `std::vector`, yet it is passed by value to 3 functions and copied in 9 loops and locals. New read-only `std::string` parameters are passed by value, and sink parameters are copied instead of moved.
   7. **#70 (should).** Inner-scope names shadow outer ones within a few lines of each other: `data` in `visualize_class_type`, and the nested loop index `i` in `setup_arguments`.
   8. **#66 (should).** The CLI has its own copy of "read a variable as `typed_data`", which `target` already does internally.
   9. **#71 (should).** The new bit-field and ABI helpers narrow `std::uint64_t` to `std::uint8_t`, compare `int` template tags with `std::uint64_t`, and mask with negative `int`s.
-  10. **Still open from September:** #1 (`elf` RAII, must) and #3 (copyable `pipe`, must).
+  10. **Still open from September:** #1 (`elf` RAII, must) and #3 (copyable `pipe`, must). **Both fixed since:** #1 in `e2dd85f`, #3 in `d5b66d8`.
 - **Caveats:** none. The tree builds cleanly, every translation unit compiled under clang-tidy, and the guidelines snapshot is fresh.
 
 ## 2. Project profile
@@ -111,43 +111,43 @@ Full text for each of these is in `.claude/cpp-style-review-2026-09-06.md`; its 
 
 | # | Sev | Title (short) | Based on (see Appendix B) | Status | New sites since `4915d55` → Fix |
 |---|---|---|---|---|---|
-| 1 | must | `elf` ctor without RAII members | CG E.6; CG C.31; CG R.1; CG C.49; CCS Item 13; EC++ Item 13 | open | — |
+| 1 | must | `elf` ctor without RAII members | CG E.6; CG C.31; CG R.1; CG C.49; CCS Item 13; EC++ Item 13 | **fixed** (`e2dd85f`) | `elf` owns the mapping through an RAII `mapped_file` member, the fd is closed right after `mmap`, and `path_`/`map_`/`header_` are set in the member-initializer list (`src/elf.cpp:23-77`, `include/libgsdb/elf.hpp:93-113`). |
 | 2 | must | `symbol_name_map_` keys dangle | CG SL.str.1; CG SL.str.2; CG R.12; CG R.10; CG Pro.lifetime; CERT MEM50-CPP | **fixed** (`fd6be79`) | — |
-| 3 | must | `pipe` copyable | CG C.21; EMC++ Item 17; CCS Item 52; CCS Item 53; EC++ Item 6; CG ES.27 | open | — |
+| 3 | must | `pipe` copyable | CG C.21; EMC++ Item 17; CCS Item 52; CCS Item 53; EC++ Item 6; CG ES.27 | **fixed** (`d5b66d8`) | The copy operations are deleted (`include/libgsdb/pipe.hpp:19-20`), which also suppresses the moves. `fds_` is still an uninitialized C array (#16). |
 | 4 | should | Manual C resource pairs | CG R.1; CG R.10; CG R.12; CG E.19; CG CPL.3; CERT FIO51-CPP; CERT POS54-C; CG SL.io.2 | open | `test/tests.cpp` "Local variables" (`open("/dev/null")`/`close`). Fix: a test-local `unique_fd`. |
 | 5 | should | `file_entry` into a growable `mutable` vector | CG R.3; CG ES.65; CG Pro.lifetime; EMC++ Item 16 | open | — |
 | 6 | consider | `optional<T*>` returns | CG F.60; ToTW #163; CG C.32 | open | — |
-| 7 | must | Stored callback captures `[&]` | CG F.53; CG F.54; EMC++ Item 31 | open, **+2** | `src/target.cpp:1117-1119`, `:1147-1149` (`install_hit_handler([&] { return false; })`). Fix: `[]`, since nothing is used. |
-| 8 | should | `bool` params / bare literals | CG I.24; CG I.4; ToTW #94; CG Enum.2 | open, **+16** | New `bool` params: `attr::as_expression`, `as_location_list`, `as_evaluated_location(…, bool in_frame_info)` (`include/libgsdb/dwarf.hpp:257, 261, 266`); `dwarf::index_die(…, bool in_function = false)` (`:515`). Bare literals: `as_evaluated_location(…, false)` (`src/target.cpp:98-99`; `tools/gsdb.cpp:938-940, 971-972`); `write_by_id(…, true)` ×9 (`src/target.cpp:191, 297, 369, 388, 390, 1121`; `src/process.cpp:1034, 1042`; `src/dwarf.cpp:883` with `false`). Fix: `enum class frame_info { no, yes }` and `enum class commit { no, yes }`, or `/*in_frame_info=*/false` at call sites, the way `set_ptrace_options(…, /*kill_on_tracer_exit=*/true)` already does. |
+| 7 | must | Stored callback captures `[&]` | CG F.53; CG F.54; EMC++ Item 31 | **fixed** (`4238b04`, `30b19d3`) | The two new handlers, `src/target.cpp:1129-1131` and `:1159-1161`, now capture `[]` (`4238b04`), and the original one at `:841` captures `[this]` (`30b19d3`). |
+| 8 | should | `bool` params / bare literals | CG I.24; CG I.4; ToTW #94; CG Enum.2 | open, **+16** | New `bool` params: `attr::as_expression`, `as_location_list`, `as_evaluated_location(…, bool in_frame_info)` (`include/libgsdb/dwarf.hpp:257, 261, 266`); `dwarf::index_die(…, bool in_function = false)` (`:515`). Bare literals: `as_evaluated_location(…, false)` (`src/target.cpp:98-99`; `tools/gsdb.cpp:938-940, 975-976`); `write_by_id(…, true)` ×9 (`src/target.cpp:194, 303, 375, 394, 396, 1133`; `src/process.cpp:1034, 1042`; `src/dwarf.cpp:886` with `false`). Fix: `enum class frame_info { no, yes }` and `enum class commit { no, yes }`, or `/*in_frame_info=*/false` at call sites, the way `set_ptrace_options(…, /*kill_on_tracer_exit=*/true)` already does. |
 | 9 | should | Parameter passing | CG F.16; CG F.18; EMC++ Item 41; ToTW #117; ToTW #77; CG P.9 | open, **+many** | → #68 |
 | 10 | should | `unique_ptr<target>&` params | CG R.30; CG F.7; ToTW #188 | open | — |
 | 11 | should | Non-`explicit` single-arg ctors | CG C.46; Google "Implicit Conversions" | **partly fixed** (`dwarf`, `501504a`), **+2** | `type(die)`, `type(builtin_type)` (`include/libgsdb/type.hpp:34-35`). `strip()` depends on the implicit `die → type` conversion through a round trip, `ret = ret.get_die()[DW_AT_type].as_type().get_die();` (`:59`). Fix: make `type(die)` `explicit` and write `ret = ret.get_die()[DW_AT_type].as_type();`. Keeping `type(builtin_type)` implicit for literal arguments is defensible, but say so in a comment. |
-| 12 | should | Unused params, stale `[[maybe_unused]]`, dead locals | CG F.9; CERT MSC13-C; CERT MSC12-C; cppreference `[[maybe_unused]]` | open, **+4** | `[[maybe_unused]] auto bit_size` (`src/type.cpp:213`); `[[maybe_unused]] auto param_classes` (`src/target.cpp:304`), which runs the whole classification and throws the result away; `[[maybe_unused]] auto& dwarf` (`src/target.cpp:1035`); `[[maybe_unused]] const gsdb::process& proc` (`src/dwarf.cpp:2294`). Fix: delete the locals and leave the parameter unnamed. |
+| 12 | should | Unused params, stale `[[maybe_unused]]`, dead locals | CG F.9; CERT MSC13-C; CERT MSC12-C; cppreference `[[maybe_unused]]` | open, **+4** | `[[maybe_unused]] auto bit_size` (`src/type.cpp:213`); `[[maybe_unused]] auto param_classes` (`src/target.cpp:310`), which runs the whole classification and throws the result away; `[[maybe_unused]] auto& dwarf` (`src/target.cpp:1047`); `[[maybe_unused]] const gsdb::process& proc` (`src/dwarf.cpp:2297`). Fix: delete the locals and leave the parameter unnamed. |
 | 13 | should | `up()`/`down()` preconditions | CG I.5; CG I.6; CG ES.104 | open | — |
 | 14 | should | Small API-shape issues | CG F.49; CG NL.25; CG I.13; CG F.24 | open | — |
 | 15 | consider | `[[nodiscard]]` | CG E.25; cppreference: `[[nodiscard]]` attribute; clang-tidy: `modernize-use-nodiscard` | open | `find_variable`, `resolve_indirect_name`, `evaluate_expression`, `read_location_data`, `inferior_malloc`. |
-| 16 | should | Read-before-write members | CG ES.20; CG C.41; CG C.48; CCS Item 19; EC++ Item 4 | open | — |
-| 17 | should | Assign in ctor body | CG C.49; CCS Item 48; EC++ Item 4 | open | — |
+| 16 | should | Read-before-write members | CG ES.20; CG C.41; CG C.48; CCS Item 19; EC++ Item 4 | open, partly fixed | The `elf` members are fixed with #1 (`e2dd85f`). |
+| 17 | should | Assign in ctor body | CG C.49; CCS Item 48; EC++ Item 4 | open, partly fixed | `elf`'s `path_ = path;` is fixed with #1 (`e2dd85f`). |
 | 18 | should | `breakpoint` protected data and duplication | CG C.133; CG ES.3; CG F.1; CCS Item 41 | open | — |
 | 19 | should | Virtual `resolve()` from ctors | CG C.82; CG C.50; EC++ Item 9; CERT OOP50-CPP | open | — |
 | 20 | should | `dynamic_cast` chain | CG C.146; CG C.153; CCS Item 90 | open | — |
-| 21 | should | Const-correctness holes | CG Con.2; CG Con.3; CG Con.4; EC++ Item 3; EC++ Item 28; CG Con.5 | open, **+1** | `std::array<gsdb::register_id, 6> int_regs` and `sse_regs` are rebuilt on every call (`src/target.cpp:260-270`). Fix: `static constexpr std::array`. |
+| 21 | should | Const-correctness holes | CG Con.2; CG Con.3; CG Con.4; EC++ Item 3; EC++ Item 28; CG Con.5 | open, **+1** | `std::array<gsdb::register_id, 6> int_regs` and `sse_regs` are rebuilt on every call (`src/target.cpp:263-273`). Fix: `static constexpr std::array`. The `elf::data_` sub-issue is fixed with #1: the mapping is read through `const std::byte*` (`include/libgsdb/elf.hpp:102-104`). |
 | 22 | should | `const_cast` const-overload idiom | CG ES.50; CG ES.3; EC++ Item 3; cppreference: Explicit object member functions | open | — |
 | 23 | should | Comparison operators | CG C.86; CG C.161; cppreference: Default comparisons | open, **+1** | `type::operator!=` is hand-written next to `operator==` (`include/libgsdb/type.hpp:96-97`). C++20 rewrites `!=` from `==`. Fix: delete `operator!=`. |
 | 24 | should | `eh_hdr::parent` unused | CG C.12; CERT MSC13-C | open | — |
 | 25 | consider | Anonymous union | CG C.181; CG C.182; CG P.4 | open | — |
 | 26 | consider | `process` responsibilities | CG F.2; CCS Item 5; CG C.9 | open | It gained `read_string` and `inferior_call` (`include/libgsdb/process.hpp:252-263`). |
 | 27 | consider | `unique_ptr<T>(new T)` factories | CG C.150; EMC++ Item 21; ToTW #134 | open (note only) | — |
-| 28 | should | Declare-then-assign | CG ES.20; CG ES.22; CG ES.6; CG ES.10; CG ES.28; CCS Item 18; CCS Item 19 | open, **+4** | `gsdb::register_id reg;` before a `switch` (`src/target.cpp:349`); `gsdb::virt_addr call_addr;` before an `if`/`else` (`:453`); `std::uint64_t cfa;` (`src/dwarf.cpp:869`); `std::vector<std::byte> fixed_data; fixed_data.resize(n);` (`:2303-2304`). Fix: an immediately-invoked lambda or a `?:` expression, and `std::vector<std::byte> fixed_data(storage_byte_size);`. |
-| 29 | should | Magic constants | CG ES.45; CCS Item 17; CG Con.5 | open, **+8** | 8/16-byte sizes (`src/type.cpp:366-371, 378, 388-390`); `(size + 7) & ~7` and `rsp &= ~0xf` (`src/target.cpp:285, 377`); eightbyte stride `8` (`:348-366`); `4096` (`:879`); `1024` (`src/process.cpp:1011`); `rsp -= 8` (`:1038`). Fix: `inline constexpr std::size_t eightbyte = 8;`, `stack_alignment = 16`, `pointer_size = 8`, `linux_path_max = 4096`. |
+| 28 | should | Declare-then-assign | CG ES.20; CG ES.22; CG ES.6; CG ES.10; CG ES.28; CCS Item 18; CCS Item 19 | open, **+4** | `gsdb::register_id reg;` before a `switch` (`src/target.cpp:355`); `gsdb::virt_addr call_addr;` before an `if`/`else` (`:459`); `std::uint64_t cfa;` (`src/dwarf.cpp:872`); `std::vector<std::byte> fixed_data; fixed_data.resize(n);` (`:2306-2307`). Fix: an immediately-invoked lambda or a `?:` expression, and `std::vector<std::byte> fixed_data(storage_byte_size);`. The two `elf.cpp` assignments inside conditions and `void* ret;` are fixed with #1. |
+| 29 | should | Magic constants | CG ES.45; CCS Item 17; CG Con.5 | open, **+8** | 8/16-byte sizes (`src/type.cpp:366-371, 378, 388-390`); `(size + 7) & ~7` and `rsp &= ~0xf` (`src/target.cpp:288, 383`); eightbyte stride `8` (`:354-372`); `4096` (`:891`); `1024` (`src/process.cpp:1011`); `rsp -= 8` (`:1038`). Fix: `inline constexpr std::size_t eightbyte = 8;`, `stack_alignment = 16`, `pointer_size = 8`, `linux_path_max = 4096`. |
 | 30 | should | Signed/unsigned in address math | CG ES.100; CG ES.102; CG ES.106; CG ES.104; CG ES.46 | open | → #71 for the new code |
 | 31 | should | Bit manipulation on signed `int` | CG ES.101; CG ES.46; CG ES.41 | open | → #71 for the new code |
-| 32 | should | Avoidable `reinterpret_cast`s | CG ES.48; CG ES.49; CG P.4; CG C.90; CG SL.con.4; CCS Item 91; CCS Item 92; cppreference `std::ignore` | open, **+7** | `src/target.cpp:129, 940, 989, 991`; `src/dwarf.cpp:2306-2307`; `test/tests.cpp` (DWARF expression test). Two more sit in commented-out code (#34). Fix: see #71 (span-based `memcpy_bits`) and #67 (`to_byte_vec`). |
+| 32 | should | Avoidable `reinterpret_cast`s | CG ES.48; CG ES.49; CG P.4; CG C.90; CG SL.con.4; CCS Item 91; CCS Item 92; cppreference `std::ignore` | open, **+7** | `src/target.cpp:129, 952, 1001, 1003`; `src/dwarf.cpp:2309-2310`; `test/tests.cpp` (DWARF expression test). Two more sit in commented-out code (#34). Fix: see #71 (span-based `memcpy_bits`) and #67 (`to_byte_vec`). |
 | 33 | should | Names that shadow type names | CG ES.12; CG NL.19; cppbestpractices (warnings) | open, **+6** | Locals named `die` or `type` that shadow the classes (`src/type.cpp:118-119, 424, 466, 615, 746`); `type(die die)` and `type(builtin_type type)` (`include/libgsdb/type.hpp:34-35`). Fix: `d`, `ty`, `type_die`, and so on. |
-| 34 | should | Commented-out code | LLVM "Comment Formatting"; CERT MSC12-C; CG NL.3 | open, **+2** | `src/target.cpp:959-964`; `tools/gsdb.cpp:1020-1031`. Fix: delete. |
+| 34 | should | Commented-out code | LLVM "Comment Formatting"; CERT MSC12-C; CG NL.3 | open, **+2** | `src/target.cpp:971-976`; `tools/gsdb.cpp:1024-1035`. Fix: delete. |
 | 35 | should | Two spellings of logical operators | CCS Item 0; cppreference: Alternative operator representations; clang-tidy: `readability-operators-representation` | open | — |
 | 36 | consider | Loop shapes | CG ES.71; CG ES.73; CG ES.75; CG ES.3; CG P.9 | open | — |
-| 37 | consider | Readability nits | CG ES.78; cppreference: `std::unreachable`; CG ES.87; ToTW #141; CG ES.56; LLVM "Don't use else after a return" | open, **+8** | `case X: error::send(...);` followed by the next label, inside `visualize_base_type` (`src/type.cpp:135-136, 151-153, 168-170, 175-176`); `else` after `return` (`src/type.cpp:510`, `src/target.cpp:133, 149, 945`, `src/dwarf.cpp:2226`); `if (…) return true; return false;` (`src/type.cpp:579-583`). Fix: as in #37. |
+| 37 | consider | Readability nits | CG ES.78; cppreference: `std::unreachable`; CG ES.87; ToTW #141; CG ES.56; LLVM "Don't use else after a return" | open, **+8** | `case X: error::send(...);` followed by the next label, inside `visualize_base_type` (`src/type.cpp:135-136, 151-153, 168-170, 175-176`); `else` after `return` (`src/type.cpp:510`, `src/target.cpp:133, 149, 957`, `src/dwarf.cpp:2229`); `if (…) return true; return false;` (`src/type.cpp:579-583`). Fix: as in #37. |
 | 38 | should | Enum arithmetic for debug registers | CG Enum.4; CG ES.3; cppreference: `std::to_underlying` | open | — |
 | 39 | should | X-macro helper macros leak | CG ES.33; CG ES.31; CG ES.32 | open | — |
 | 40 | consider | Enum and constant hygiene | CG Enum.3; EMC++ Item 10; CG Enum.6; CG P.4; CG ES.27; CG SL.con.1; CG Con.5; EMC++ Item 15 | open | — |
@@ -158,19 +158,19 @@ Full text for each of these is in `.claude/cpp-style-review-2026-09-06.md`; its 
 | 45 | should | Library prints and terminates | CG E.2; CERT ERR50-CPP | open | — |
 | 46 | should | `catch` by non-const ref, catch-all | CG E.15; CG E.17 | open | — |
 | 47 | should | Unchecked external input | CG SL.io.2; CG I.5; CERT ERR62-CPP; CERT STR37-C; cppreference `std::isdigit`; CERT POS54-C | open, **+1** | `std::isdigit(arg[0])` on a plain `char` (`src/target.cpp:141`). Fix: `std::isdigit(static_cast<unsigned char>(arg[0]))`. |
-| 48 | consider | Error-policy consistency | CG E.1; CG E.14; CG I.5; CG I.6; CERT ERR62-CPP; POSIX `fork()`; cppreference `EXIT_FAILURE`; CG C.36; CG E.17 | open, **+2** | New deliberate catch-alls: `target::notify_stop` (`src/target.cpp:536-541`) and `~process` (`src/process.cpp:174-175`). Both are justified (best-effort unwind; CG C.36). Fix: one comment on each saying why. |
+| 48 | consider | Error-policy consistency | CG E.1; CG E.14; CG I.5; CG I.6; CERT ERR62-CPP; POSIX `fork()`; cppreference `EXIT_FAILURE`; CG C.36; CG E.17 | open, **+2** | New deliberate catch-alls: `target::notify_stop` (`src/target.cpp:542-547`) and `~process` (`src/process.cpp:174-175`). Both are justified (best-effort unwind; CG C.36). Fix: one comment on each saying why. |
 | 49 | should | Mixed include styles | CG SF.12; CG SF.10; Google "Names and Order of Includes"; Google "Include What You Use" | open | `type.hpp` and `type.cpp` repeat the angle/quoted split. |
-| 50 | should | Heavy includes | CG SF.9; EC++ Item 31; CCS Item 22; cppbestpractices (fwddecl) | open, **+1** | `target.hpp` now includes `type.hpp` (needed: `std::optional<typed_data>` member). See #72. |
+| 50 | should | Heavy includes | CG SF.9; EC++ Item 31; CCS Item 22; cppbestpractices (fwddecl) | open, **+1** | `target.hpp` now includes `type.hpp` (needed: `std::optional<typed_data>` member). See #72. Since `e2dd85f`, `~elf()` is implicit, so forward-declaring `dwarf` in `elf.hpp` would also need `~elf();` declared there and defaulted in `elf.cpp`. |
 | 51 | consider | Header naming, C headers | CG SF.1; CG NL.27; cppreference "C compatibility headers"; Google "The #define Guard" | open | — |
 | 52 | should | `count()` then `at()` | CG P.9; CG ES.1; ESTL Item 45; cppreference: associative-container `contains` | open, **+1** | `!seen.count(name)` (`tools/gsdb.cpp:937`). Fix: `contains`. |
-| 53 | should | Output mechanisms | CG SL.io.50; CG SL.io.3; CG SL.io.1; cppbestpractices (endl); cppreference: `std::println` | open, **+2** | `std::cerr << "Variable not found!";` with no newline, next to `std::print` (`tools/gsdb.cpp:967`); `std::print("None")` with no newline (`:984`). Fix: `std::println(stderr, …)` and `std::println`. |
+| 53 | should | Output mechanisms | CG SL.io.50; CG SL.io.3; CG SL.io.1; cppbestpractices (endl); cppreference: `std::println` | open, **+2** | `std::cerr << "Variable not found!";` with no newline, next to `std::print` (`tools/gsdb.cpp:971`); `std::print("None")` with no newline (`:988`). Fix: `std::println(stderr, …)` and `std::println`. |
 | 54 | should | `__builtin_ctzll` | CG P.2; CG ES.1; cppreference: `std::countr_zero` | open | — |
-| 55 | consider | Standard-library idiom nits | ESTL Item 4; cppreference `starts_with`; cppreference `std::views::split`; cppreference `std::ranges::to`; cppreference "C compatibility headers"; ToTW #144 | open, **+6** | `arg.find(".") != npos` (`src/target.cpp:142`) → `arg.contains('.')`; `std::reverse`/`std::find_if`/`std::count` with `begin()`/`end()` (`src/type.cpp:112, 468`; `src/target.cpp:333-337`) → `std::ranges::*`; `push_back(std::pair{&elf, sym})` (`src/target.cpp:732`) → `emplace_back(&elf, sym)`; `insert(std::make_pair(…))` (`src/dwarf.cpp:1437, 1441`) → `emplace`; `using namespace gsdb;` in a function that still qualifies half its names (`src/type.cpp:183-203`) → `using enum gsdb::parameter_class;`. |
+| 55 | consider | Standard-library idiom nits | ESTL Item 4; cppreference `starts_with`; cppreference `std::views::split`; cppreference `std::ranges::to`; cppreference "C compatibility headers"; ToTW #144 | open, **+6** | `arg.find(".") != npos` (`src/target.cpp:142`) → `arg.contains('.')`; `std::reverse`/`std::find_if`/`std::count` with `begin()`/`end()` (`src/type.cpp:112, 468`; `src/target.cpp:339-343`) → `std::ranges::*`; `push_back(std::pair{&elf, sym})` (`src/target.cpp:738`) → `emplace_back(&elf, sym)`; `insert(std::make_pair(…))` (`src/dwarf.cpp:1440, 1444`) → `emplace`; `using namespace gsdb;` in a function that still qualifies half its names (`src/type.cpp:183-203`) → `using enum gsdb::parameter_class;`. |
 | 56 | should | SIGINT handler through a global | CG I.2; CERT SIG30-C; CERT SIG31-C; CERT MSC54-CPP | open | — |
 | 57 | consider | Document single-threaded caches | EMC++ Item 16; CG CP.1 | open, **+3** | `type::byte_size_` (`include/libgsdb/type.hpp:112`), `dwarf::global_variable_index_` and `member_function_index_` (`include/libgsdb/dwarf.hpp:534, 539`). `expression_results_` is not a cache; see #69. |
 | 58 | should | `get_x()` vs `x()` accessors | CG NL.8; Google "Function Names"; CCS Item 0 | open | New `get_die`, `get_builtin_type`, `get_bitfield_information`, `get_member_function_definition` next to `value_type()`, `address()`, `data()`. |
-| 59 | should | Tutorial and stale comments | CG NL.1; CG NL.2; CG NL.3 | open, **+6** | Tutorial: parameter pack and fold expression (`include/libgsdb/type.hpp:49-58`), "mutable because…" (`:110-111`), `~dest_mask` (`include/libgsdb/bit.hpp:64`). Stale: "into an `sdb::typed_data` object" (`src/target.cpp:115`); `// TODO` above code that already does the job (`:124`); "demangle it and return it" when it no longer demangles (`:777-779`). Fix: as in #59. |
-| 60 | consider | Identifier spelling and layout | CG NL.8; CG NL.16; cppbestpractices (codespell) | open, **+5** | Local `die_` with the member suffix (`src/type.cpp:374`); comment typos `pionts` (`src/type.cpp:564`), `direcly` (`include/libgsdb/elf.hpp:105`), `currect` (`src/target.cpp:1095`), `share lib` (`:888`). |
+| 59 | should | Tutorial and stale comments | CG NL.1; CG NL.2; CG NL.3 | open, **+6** | Tutorial: parameter pack and fold expression (`include/libgsdb/type.hpp:49-58`), "mutable because…" (`:110-111`), `~dest_mask` (`include/libgsdb/bit.hpp:64`). Stale: "into an `sdb::typed_data` object" (`src/target.cpp:115`); `// TODO` above code that already does the job (`:124`); "demangle it and return it" when it no longer demangles (`:783-785`). Fix: as in #59. |
+| 60 | consider | Identifier spelling and layout | CG NL.8; CG NL.16; cppbestpractices (codespell) | open, **+5** | Local `die_` with the member suffix (`src/type.cpp:374`); comment typos `pionts` (`src/type.cpp:564`), `direcly` (`include/libgsdb/elf.hpp:121`), `currect` (`src/target.cpp:1107`), `share lib` (`:900`). |
 | 61 | should | 2005-era warning set | CCS Item 1; EC++ Item 53; CG P.12; cppbestpractices (warnings) | open | `-Wshadow` would have caught all of #70. |
 | 62 | should | No `.clang-tidy`; dead GTest | CG P.12; CCS Item 2; cppbestpractices (analysis) | open | — |
 | 63 | consider | CMake modernization | CMake docs: `include_directories()`; CMake docs: `CMAKE_<LANG>_COMPILER`; CMake docs: `cmake-presets(7)`; Henry Schreiner et al., *An Introduction to Modern CMake* | open | — |
@@ -180,17 +180,18 @@ Full text for each of these is in `.claude/cpp-style-review-2026-09-06.md`; its 
 ### 64. `std::optional` dereferenced without a check — should
 Rules: CG ES.65 “Don't dereference an invalid pointer” (an empty `std::optional` is the same hazard as an invalid pointer); CG SL.4 “Use the standard library in a type-safe manner”; CG I.5 “State preconditions (if any)”.
 Where: 5 sites.
-- `tools/gsdb.cpp:957`: `data.variable->visualize(...)`.
-- `src/target.cpp:163`: `return *res.variable;`.
-- `:297`: `return_slot->addr()`.
-- `:826`: `debug_info->r_brk`.
-- `:1173`: `*res.address()`.
+Status: fixed in `30b19d3`. Every site now checks first: the CLI prints an error and returns (`tools/gsdb.cpp:957-960`), and the four library sites call `error::send` (`src/target.cpp:162-164, 300-302, 833-835, 1181-1183`). The type-carries-the-invariant option was not taken.
+- `tools/gsdb.cpp:961`: `data.variable->visualize(...)`.
+- `src/target.cpp:166`: `return *res.variable;`.
+- `:303`: `return_slot->addr()`.
+- `:838`: `debug_info->r_brk`.
+- `:1188`: `*res.address()`.
 - `test/tests.cpp` adds 7 `.variable->` uses, which are acceptable in tests.
 
-What:
+What (before the fix):
 ```cpp
 auto data = target.resolve_indirect_name(name, pc);
-auto str = data.variable->visualize(target.get_process());   // gsdb.cpp:956-957
+auto str = data.variable->visualize(target.get_process());   // gsdb.cpp:956-957 at review time
 ```
 Why: `resolve_indirect_name` returns `variable == std::nullopt` whenever the name ends in a call (`foo(`, `obj.method(`). So `variable read foo(` reads through an empty optional, which is undefined behaviour rather than an error message. This one is a latent defect. The other four sites are safe only because of an invariant set up elsewhere, and nothing at the dereference says so:
 - `return_slot` is engaged exactly when the callee has `DW_AT_type`.
@@ -210,8 +211,8 @@ Where:
 - **Declarations:** 22 of the form `std::optional<pid_t> otid = std::nullopt`, 10 in `include/libgsdb/process.hpp` (including `inferior_call`, `:258-263`) and 12 in `include/libgsdb/target.hpp`.
 - **Library calls inside thread-aware code that leave it out**, and so use the current thread:
   - `src/stack.cpp:31`: `reset_inline_height` (bug-audit M11).
-  - `src/target.cpp:716`: `step_out` compares `process_->get_pc()` while stepping `tid`.
-  - `src/target.cpp:1096` and `:1121`: `inferior_malloc` has no thread parameter at all, although its caller `parse_argument` (`:117-127`) has one.
+  - `src/target.cpp:722`: `step_out` compares `process_->get_pc()` while stepping `tid`.
+  - `src/target.cpp:1108` and `:1133`: `inferior_malloc` has no thread parameter at all, although its caller `parse_argument` (`:117-127`) has one.
   - `src/process.cpp:791-846`: the hardware stoppoint helpers (bug-audit M7).
   - `src/disassembler.cpp:19`.
 
@@ -219,7 +220,7 @@ What:
 ```cpp
 stop_reason step_out(std::optional<pid_t> otid = std::nullopt);
 ...
-if (!reason.is_breakpoint() or process_->get_pc() != return_address)   // target.cpp:716
+if (!reason.is_breakpoint() or process_->get_pc() != return_address)   // target.cpp:722
 ```
 Why: the default makes "which thread?" invisible at every call site. Forgetting the argument compiles, and the result is wrong only in multi-threaded inferiors, which is exactly how M7 and M11 got in.
 Fix:
@@ -232,8 +233,8 @@ Fix:
 Rules: CG ES.3 “Don't repeat yourself, avoid redundant code”; CG F.1 “"Package" meaningful operations as carefully named functions”; CG A.2 “Express potentially reusable parts as a library”.
 Where:
 - `tools/gsdb.cpp:926-950` (`handle_variable_locals_command`) repeats `get_initial_variable_data` (`src/target.cpp:92-111`): evaluate `DW_AT_location` against the selected frame's registers, call `read_location_data`, wrap the bytes in a `typed_data`.
-- `tools/gsdb.cpp:961-999` (`handle_variable_location_command`) walks the `dwarf_expression::result` alternatives that `target::read_location_data` also walks.
-- The commented-out block at `:1020-1031` is a third copy.
+- `tools/gsdb.cpp:965-1003` (`handle_variable_location_command`) walks the `dwarf_expression::result` alternatives that `target::read_location_data` also walks.
+- The commented-out block at `:1024-1035` is a third copy.
 
 What:
 ```cpp
@@ -247,13 +248,13 @@ Fix: add `typed_data target::read_variable(const die& var, pid_t tid) const`, bu
 ### 67. Copy-pasted blocks in the new DWARF, type and call code — should
 Rules: CG ES.3 “Don't repeat yourself, avoid redundant code”; CG F.1 “"Package" meaningful operations as carefully named functions”.
 Where:
-- **CFI expression rules,** `src/dwarf.cpp:767-775` (`DW_CFA_def_cfa_expression`), `:815-824` (`DW_CFA_expression`) and `:825-834` (`DW_CFA_val_expression`). Each copy reads `len` and builds `dwarf_expression{elf.get_dwarf(), {cur.position(), cur.position() + len}, true}`.
+- **CFI expression rules,** `src/dwarf.cpp:767-776` (`DW_CFA_def_cfa_expression`), `:816-826` (`DW_CFA_expression`) and `:827-837` (`DW_CFA_val_expression`). Each copy reads `len` and builds `dwarf_expression{elf.get_dwarf(), {cur.position(), cur.position() + len}, true}`.
   - The swap of `expr_rule` and `val_expr_rule` (bug-audit M1) happened inside this copy-paste.
-  - None of the three copies advances the cursor past the expression (`cur += len`). The CFI loop therefore decodes the next "opcode" from inside the DWARF expression. sdb has the same three copies, so this is an inherited latent bug, and it is **not yet in the bug audit**.
-- **`index_die`,** `src/dwarf.cpp:1433-1443`: the `DW_AT_specification` and `DW_AT_abstract_origin` branches differ only in the attribute name.
+  - None of the three copies advances the cursor past the expression (`cur += len`). The CFI loop therefore decodes the next "opcode" from inside the DWARF expression. sdb has the same three copies, so this is an inherited latent bug, and it is **not yet in the bug audit**. **Fixed in `573b355`**, which adds `cur += len;` after each copy (`src/dwarf.cpp:773, 823, 834`).
+- **`index_die`,** `src/dwarf.cpp:1436-1446`: the `DW_AT_specification` and `DW_AT_abstract_origin` branches differ only in the attribute name.
 - **`is_non_trivial_for_calls`,** `src/type.cpp:716-728`: the copy/move-constructor branch and the destructor branch repeat `!child.contains(DW_AT_defaulted) or ((!child[DW_AT_defaulted].as_int()) != DW_DEFAULTED_in_class)`. That is the inverted test from bug-audit H11a, written twice; clang-tidy also flags its `bool → int` conversion.
-- **"Use the entry point as the return address and silence its handler":** `src/target.cpp:1116-1119` and `:1146-1149`.
-- **`read_location_data`'s `get_bytes` lambda** (`src/target.cpp:938-943`) re-implements `to_byte_vec` (`include/libgsdb/bit.hpp:77-82`) with a `reinterpret_cast`.
+- **"Use the entry point as the return address and silence its handler":** `src/target.cpp:1128-1131` and `:1158-1161`.
+- **`read_location_data`'s `get_bytes` lambda** (`src/target.cpp:950-955`) re-implements `to_byte_vec` (`include/libgsdb/bit.hpp:77-82`) with a `reinterpret_cast`.
 - **Minor:** in `get_parameter_classes`, 4 and 5 `case` labels carry identical bodies (`src/type.cpp:593-609, 619-640`).
 
 Why: the duplicates have already drifted twice (M1 and H11a), and the cursor bug sits in all three CFI copies.
@@ -270,15 +271,15 @@ This continues #9.
 Rules: CG F.16 “For "in" parameters, pass cheaply-copied types by value and others by reference to `const`”; CG F.18 “For "will-move-from" parameters, pass by `X&&` and `std::move` the parameter”; CG P.9 “Don't waste time or space”; EMC++ Item 41 “Consider pass by value for copyable parameters that are cheap to move and always copied”; ToTW #77 “Temporaries, Moves, and Copies”; ToTW #117 “Copy Elision and Pass-by-value”; ToTW #144 “Heterogeneous Lookup in Associative Containers” (`std::string_view` lookups).
 Where:
 - **`gsdb::die` copied.** It owns a `std::vector<const std::byte*>`, and the `children()` iterator returns `const die&`, so `auto` copies.
-  - By-value parameters: `setup_arguments(…, gsdb::die func, …)`, `read_return_value(…, gsdb::die func, …)` and `inferior_call_from_dwarf(…, gsdb::die func, …)` (`src/target.cpp:257, 393, 447`).
-  - Loop copies: `for (auto child : ….children())` at `src/type.cpp:226, 275, 316, 752, 778` and `src/dwarf.cpp:1463`.
-  - Local copies: `auto var = *it;` (`src/type.cpp:475`); `auto frame_to_skip = inline_stack[…]` and `auto current_frame = …` (`src/target.cpp:655, 699`).
-- **Read-only `std::string` passed by value:** `dwarf::find_global_variable` and `find_local_variable` (`include/libgsdb/dwarf.hpp:483, 485`), `target::find_variable` (`include/libgsdb/target.hpp:163`), and `get_initial_variable_data(…, std::string name, …)` (`src/target.cpp:81-83`). Also `std::optional<gsdb::typed_data> object`, passed by value and only read (`:170`).
+  - By-value parameters: `setup_arguments(…, gsdb::die func, …)`, `read_return_value(…, gsdb::die func, …)` and `inferior_call_from_dwarf(…, gsdb::die func, …)` (`src/target.cpp:260, 399, 453`).
+  - Loop copies: `for (auto child : ….children())` at `src/type.cpp:226, 275, 316, 752, 778` and `src/dwarf.cpp:1466`.
+  - Local copies: `auto var = *it;` (`src/type.cpp:475`); `auto frame_to_skip = inline_stack[…]` and `auto current_frame = …` (`src/target.cpp:661, 705`).
+- **Read-only `std::string` passed by value:** `dwarf::find_global_variable` and `find_local_variable` (`include/libgsdb/dwarf.hpp:483, 485`), `target::find_variable` (`include/libgsdb/target.hpp:163`), and `get_initial_variable_data(…, std::string name, …)` (`src/target.cpp:81-83`). Also `std::optional<gsdb::typed_data> object`, passed by value and only read (`:173`).
 - **Sinks copied instead of moved:**
   - `typed_data(…, type value_type, …) : …, type_(value_type)` (`include/libgsdb/type.hpp:119-121`).
   - `gsdb::typed_data{member_data, subtype}` (`src/type.cpp:62-63`).
-  - `return {fixed_data, type_};` (`src/dwarf.cpp:2310`).
-  - `auto name = args[2];` (`tools/gsdb.cpp:954, 963`).
+  - `return {fixed_data, type_};` (`src/dwarf.cpp:2313`).
+  - `auto name = args[2];` (`tools/gsdb.cpp:954, 967`).
 
 Why: every `die` copy is a heap allocation. These loops run for every member of every type during ABI classification and printing, and the classification itself is recursive.
 Fix:
@@ -291,7 +292,7 @@ Fix:
 
 ### 69. `get_expression_result() const` mutates observable state through `mutable` — should
 Rules: CG Con.2 “By default, make member functions `const`” (a function should be `const` unless it changes the object's observable state); CG ES.50 “Don't cast away `const`” (its example says caching and memoization are what `mutable` is for); EMC++ Item 16 “Make const member functions thread safe” (`mutable` members written from `const` functions).
-Where: `include/libgsdb/target.hpp:174` (`const typed_data& get_expression_result(std::size_t i) const;`) and `:208` (`mutable std::vector<typed_data> expression_results_;`); `src/target.cpp:1163-1176`.
+Where: `include/libgsdb/target.hpp:174` (`const typed_data& get_expression_result(std::size_t i) const;`) and `:208` (`mutable std::vector<typed_data> expression_results_;`); `src/target.cpp:1175-1191`.
 What:
 ```cpp
 auto& res = expression_results_[i];
@@ -308,8 +309,8 @@ Fix: return a fresh value without storing it: `typed_data get_expression_result(
 Rules: CG ES.12 “Do not reuse names in nested scopes”; cppbestpractices, ch. 2 "Use the Tools Available", § Compilers → GCC / Clang (recommended warning flags) (recommends `-Wshadow`).
 Where:
 - `src/type.cpp:47-65`: the parameter `const gsdb::typed_data& data` is shadowed by `auto data = gsdb::typed_data{…}` at `:63`. Line `:60` reads the parameter and line `:65` reads the local.
-- `src/target.cpp:326-370`: the outer `for (std::size_t i …)` over parameters is shadowed by the inner `for (std::size_t i = 0; i < param_size; i += 8)` at `:348`. `args[i]` at `:346` is the parameter index, while `param_classes[i / 8]` and `bytes.begin() + i` at `:350` and `:365-367` are byte offsets.
-- `src/target.cpp:1003, 1010`: `auto& dwarf` is declared in `find_variable` and again inside its `for_each` lambda.
+- `src/target.cpp:332-376`: the outer `for (std::size_t i …)` over parameters is shadowed by the inner `for (std::size_t i = 0; i < param_size; i += 8)` at `:354`. `args[i]` at `:352` is the parameter index, while `param_classes[i / 8]` and `bytes.begin() + i` at `:356` and `:371-373` are byte offsets.
+- `src/target.cpp:1015, 1022`: `auto& dwarf` is declared in `find_variable` and again inside its `for_each` lambda.
 
 What:
 ```cpp
@@ -324,14 +325,14 @@ Fix: rename (`member`, `byte_off`, `elf_dwarf`), then add `-Wshadow` as #61 prop
 This continues #30 and #31.
 Rules: CG ES.46 “Avoid lossy (narrowing, truncating) arithmetic conversions”; CG ES.100 “Don't mix signed and unsigned arithmetic”; CG ES.101 “Use unsigned types for bit manipulation”; CG I.13 “Do not pass an array as a single pointer”; CG F.24 “Use a `span<T>` or a `span_p<T>` to designate a half-open sequence”.
 Where:
-- **Bit-field offsets:** `src/dwarf.cpp:2263, 2284, 2288` assign `std::uint64_t` expressions to `std::uint8_t bit_offset`, truncating silently. The struct (`include/libgsdb/dwarf.hpp:589-594`) mixes `std::uint64_t bit_size` with `std::uint8_t bit_offset`.
+- **Bit-field offsets:** `src/dwarf.cpp:2266, 2287, 2291` assign `std::uint64_t` expressions to `std::uint8_t bit_offset`, truncating silently. The struct (`include/libgsdb/dwarf.hpp:589-594`) mixes `std::uint64_t bit_size` with `std::uint8_t bit_offset`.
 - **Bit offset narrowed to `int`:** `classify_class_field(…, int bit_offset)` (`src/type.cpp:206-208`) receives `current_bit_offset`, a `std::uint64_t` (`:230`).
 - **`strip<int... Tags>`** (`include/libgsdb/type.hpp:49-58`) compares `int` template tags with the `std::uint64_t` DIE tag.
 - **`memcpy_bits`** (`include/libgsdb/bit.hpp:55-71`):
   - It builds masks as `int` (`1 << (dest_bit % 8)`) and narrows them to `std::uint8_t`; `~dest_mask` is an `int` again.
   - It takes raw pointers without lengths and `std::uint32_t` bit counts, while callers pass `std::size_t`/`std::uint64_t` values.
-  - Callers `reinterpret_cast` `std::byte*` to `std::uint8_t*` to call it (`src/target.cpp:989-992`, `src/dwarf.cpp:2306-2308`).
-- **Negative `int` masks:** `(size + 7) & ~7` and `rsp &= ~0xf` (`src/target.cpp:285, 377`) apply negative `int`s to 64-bit unsigned values.
+  - Callers `reinterpret_cast` `std::byte*` to `std::uint8_t*` to call it (`src/target.cpp:1001-1004`, `src/dwarf.cpp:2309-2311`).
+- **Negative `int` masks:** `(size + 7) & ~7` and `rsp &= ~0xf` (`src/target.cpp:288, 383`) apply negative `int`s to 64-bit unsigned values.
 
 What:
 ```cpp
@@ -353,7 +354,7 @@ Rules: Google C++ Style Guide, “Include What You Use” (covers both the missi
 Where:
 - `include/libgsdb/type.hpp:4-15` uses `std::string` (`:138`) without including `<string>`. It includes `<algorithm>`, which it does not use.
 - `include/libgsdb/target.hpp:13, 36`: `#include <libgsdb/type.hpp>` followed by a redundant `class typed_data;` forward declaration.
-- `typed_data::fixup_bitfield` is defined in `src/dwarf.cpp:2293-2313`. No guideline rule covers where a member is defined; this one is about keeping a class's members in its own `.cpp`. It is the only `typed_data` member outside `src/type.cpp`, and its only callers are in `src/type.cpp` (`:63-64`, `:488`).
+- `typed_data::fixup_bitfield` is defined in `src/dwarf.cpp:2296-2316`. No guideline rule covers where a member is defined; this one is about keeping a class's members in its own `.cpp`. It is the only `typed_data` member outside `src/type.cpp`, and its only callers are in `src/type.cpp` (`:63-64`, `:488`).
 
 Fix:
 - In `type.hpp`, add `<string>` and drop `<algorithm>`.
@@ -450,12 +451,12 @@ With this configuration, `google-default-arguments`, `performance-unnecessary-va
 
 ## Appendix A — Grep hotspot details
 
-- **`reinterpret_cast`, 33 lines.** Added since September: `src/target.cpp:129, 940, 989, 991`, `src/dwarf.cpp:2306, 2307`, and one in `test/tests.cpp`, plus two inside commented-out code (`src/target.cpp:960`, `tools/gsdb.cpp:1029`). The older ones in `src/target.cpp` (`:76`, `:814`, `:870-881`) are byte/OS-boundary conversions and are fine. The `uint8_t` casts disappear with #71.
+- **`reinterpret_cast`, 33 lines.** Added since September: `src/target.cpp:129, 952, 1001, 1003`, `src/dwarf.cpp:2309, 2310`, and one in `test/tests.cpp`, plus two inside commented-out code (`src/target.cpp:972`, `tools/gsdb.cpp:1033`). The older ones in `src/target.cpp` (`:76`, `:814`, `:870-881`) are byte/OS-boundary conversions and are fine. The `uint8_t` casts disappear with #71.
 - **`catch (...)`, 3 sites:** `tools/gsdb.cpp:415` (#46), `src/process.cpp:174` (destructor, justified) and `:442` (rethrows after recording state, justified).
 - **`mutable` members, 7:** `include/libgsdb/dwarf.hpp:92, 362, 531, 534, 539`; `include/libgsdb/type.hpp:112`; `include/libgsdb/target.hpp:208` (#69).
 - **`std::optional<pid_t> otid = std::nullopt`, 22:** 10 in `include/libgsdb/process.hpp` and 12 in `include/libgsdb/target.hpp` (#65).
-- **`new T(...)`, 10, all private-constructor factories:** `src/process.cpp:551, 577, 644, 655, 870`; `src/target.cpp:495, 520, 746, 751, 757` (#27).
-- **`write_by_id(…, true|false)`, 9:** `src/target.cpp:191, 297, 369, 388, 390, 1121`; `src/process.cpp:1034, 1042`; `src/dwarf.cpp:883` (#8).
+- **`new T(...)`, 10, all private-constructor factories:** `src/process.cpp:551, 577, 644, 655, 870`; `src/target.cpp:501, 526, 752, 757, 763` (#27).
+- **`write_by_id(…, true|false)`, 9:** `src/target.cpp:194, 303, 375, 394, 396, 1133`; `src/process.cpp:1034, 1042`; `src/dwarf.cpp:886` (#8).
 
 ## Appendix B — Sources and where to read them
 

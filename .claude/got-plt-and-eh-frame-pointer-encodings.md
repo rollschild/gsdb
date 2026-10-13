@@ -214,7 +214,7 @@ No `.got.plt`. There *is* a `.plt.got` (the eager-binding stub section), which i
 different thing with a confusingly similar name. And critically:
 `_GLOBAL_OFFSET_TABLE_ == 0x3fb8 == start of .got`, **not** `.got.plt`.
 
-That is precisely why line 676 uses `.value_or(gsdb::file_addr{})` while line 673
+That is precisely why line 696 uses `.value_or(gsdb::file_addr{})` while line 693
 dereferences the optional with `*`: `.text` is always there, `.got.plt` frequently
 isn't. See §3.1 for the correctness caveat this raises.
 
@@ -278,7 +278,7 @@ defines the GOT base as the value of the `_GLOBAL_OFFSET_TABLE_` symbol, and in 
 classic lazy-binding layout the linker places that symbol at the start of `.got.plt`
 — confirmed empirically in §1.3 (`_GLOBAL_OFFSET_TABLE_ == 0x403338 == .got.plt`).
 
-Hence lines 675-676: `.got.plt`'s start address is being used as a stand-in for the GOT
+Hence lines 695-696: `.got.plt`'s start address is being used as a stand-in for the GOT
 base, so that if a `datarel`-encoded pointer shows up it can be resolved.
 
 Why would the compiler ever choose `datarel` over the simpler `pcrel`? Because a
@@ -322,7 +322,7 @@ Decode the first entry by hand:
 If we had used the GOT (`0x3fb8`) as the base here we'd have gotten `0x2fc4` —
 garbage, pointing into `.dynamic`-ish data, not code.
 
-Our implementation gets this right at `src/dwarf.cpp:1729-1733`, inside
+Our implementation gets this right at `src/dwarf.cpp:1732-1736`, inside
 `eh_hdr::operator[]`:
 
 ```cpp
@@ -341,7 +341,7 @@ things, and both are correct:
 
 | Call site | `data_section_start` argument | Meaning |
 |---|---|---|
-| `eh_hdr::operator[]` (`dwarf.cpp:1730`) | start of `.eh_frame_hdr` | LSB spec rule for the search table |
+| `eh_hdr::operator[]` (`dwarf.cpp:1733`) | start of `.eh_frame_hdr` | LSB spec rule for the search table |
 | `parse_fde` (`dwarf.cpp:350`) | `0` | FDE `initial_location` never uses `datarel` in practice |
 | `execute_cfi_instruction` (`dwarf.cpp:695`) | start of `.got.plt` | AMD64 psABI GOT base |
 

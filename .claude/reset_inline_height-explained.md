@@ -30,7 +30,7 @@ the same physical PC.
 When the compiler inlines functions, several source-level "frames" collapse onto
 the **same machine address**. DWARF records this with nested
 `DW_TAG_inlined_subroutine` DIEs. `inline_stack_at_pc()` (which delegates to
-`dwarf::inline_stack_at_address()`, `src/dwarf.cpp:1662`) flattens that nesting
+`dwarf::inline_stack_at_address()`, `src/dwarf.cpp:1665`) flattens that nesting
 into a vector:
 
 ```
