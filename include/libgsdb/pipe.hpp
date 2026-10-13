@@ -13,6 +13,11 @@ class pipe {
     // This is from `pipe2()`, with flags including `O_CLOEXEC`
     explicit pipe(bool close_on_exec);
     ~pipe();
+    // Declaring the copy operations also stops the compiler from generating
+    // move operations.
+    // So `pipe` is neither copyable nor movable
+    pipe(const pipe&) = delete;
+    pipe& operator=(const pipe&) = delete;
 
     int get_read() const { return fds_[read_fd]; }
     int get_write() const { return fds_[write_fd]; }
