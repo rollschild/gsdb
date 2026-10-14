@@ -165,6 +165,10 @@ A user-level skill, `cpp-style-review` (`~/.claude/skills/cpp-style-review/`), a
 
 A research report comparing gsdb's Nix flake and CMake layout against current Nix/CMake best practice, with ranked fixes and a migration plan, is at `.claude/nix-cpp-project-best-practices-2026-09-12.md`. The reusable starter it produced lives at `~/projects/cpp-nix-template` (bootstrap: `nix flake init -t ~/projects/cpp-nix-template`).
 
+## Capstone review
+
+The project's closing recap is `.claude/gsdb-capstone-review.md` (79 diagrams: 58 Mermaid, 21 ASCII). Part II is a code map: the file map, the header include graph and how forward declarations break cycles, how `types.hpp`/`bit.hpp`/`parse.hpp`/`error.hpp` and the `.inc` tables feed the rest, class diagrams, upward callbacks, data pipelines, and a sequence diagram for every user-visible operation. Part III explains how a debugger works (ptrace, registers, breakpoints, ELF, DWARF, the stack, CFI unwinding, stepping, shared libraries, threads, inferior calls) and how gsdb implements each; Part IV covers the C++; §33 maps every other doc.
+
 ## Bug audit
 
 A full correctness audit (memory-safety, ptrace/event-loop, CFI/DWARF, inferior-call ABI, CLI) with a fix plan per bug is at `.claude/bug-audit-2026-10-05.md`. Most bugs are inherited from the sdb reference; the report tags the gsdb-only divergences.
